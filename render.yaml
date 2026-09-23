@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: style-picker
+    runtime: node
+    plan: starter            # trvalý disk (fotky, databáza) vyžaduje platený plán
+    branch: claude/amazing-hawking-e90bmf
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /api/categories
+    envVars:
+      - key: NODE_VERSION
+        value: "22.22.2"
+      - key: DATA_DIR
+        value: /var/data
+      - key: TZ
+        value: Europe/Bratislava
+      - key: ADMIN_PASSWORD
+        sync: false          # Render si ho vypýta pri nasadení
+    disk:
+      name: data
+      mountPath: /var/data
+      sizeGB: 5

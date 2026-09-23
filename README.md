@@ -43,4 +43,10 @@ Bez `ADMIN_PASSWORD` sa heslo pri prvom štarte vygeneruje a vypíše do konzoly
 Aby sa ľudia dostali na appku z mobilu, musí bežať na verejnej adrese (napr. VPS, Render, Fly.io, Railway)
 s trvalým diskom pre `DATA_DIR`. Odkazy na fotky sú náhodné a nedajú sa uhádnuť, ale nie sú chránené heslom.
 
+### Nasadenie na Render
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/JurajCyprich/style_picker/tree/claude/amazing-hawking-e90bmf)
+
+Súbor `render.yaml` nastaví server aj trvalý disk (5 GB) pre databázu, fotky a videá. Pri nasadení Render vypýta `ADMIN_PASSWORD`.
+
 Testy: `npm test`
