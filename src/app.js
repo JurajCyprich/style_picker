@@ -107,7 +107,33 @@ const SCHEMA = `
     admin_note TEXT NOT NULL DEFAULT '', granted INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL, reviewed_at TEXT
   );
+  CREATE TABLE IF NOT EXISTS push_subs (
+    endpoint TEXT PRIMARY KEY, owner TEXT NOT NULL,      -- owner: 'admin' alebo 'user'
+    user_id INTEGER, keys TEXT NOT NULL, created_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS templates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL,
+    name TEXT NOT NULL, outfit TEXT NOT NULL, created_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS comments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, date TEXT NOT NULL,
+    author TEXT NOT NULL,                                 -- 'admin' alebo 'user'
+    text TEXT NOT NULL, created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS comments_day ON comments (user_id, date);
+  CREATE TABLE IF NOT EXISTS notified (key TEXT PRIMARY KEY, created_at TEXT NOT NULL);
 `;
+
+// Stĺpce pridané v novších verziách – doplnia sa do existujúcej databázy.
+const MIGRATIONS = [
+  ['items', 'status', "TEXT NOT NULL DEFAULT 'ok'"],          // ok | laundry | lent
+  ['days', 'proof_photo', 'TEXT'],
+  ['days', 'proof_at', 'TEXT'],
+  ['days', 'proof_status', 'TEXT'],                            // pending | approved | rejected
+  ['days', 'proof_note', 'TEXT'],
+  ['tasks', 'assignees', 'TEXT'],                              // JSON pole id osôb, NULL = všetci
+  ['tasks', 'repeat', "TEXT NOT NULL DEFAULT 'unlimited'"],    // unlimited | once | weekly
+];
 
 const DEFAULT_SETTINGS = { deadline: '19:00', weekly_tokens: '5', late_cost: '1' };
 const DEFAULT_CATEGORIES = ['Tričko', 'Košeľa', 'Top', 'Mikina', 'Sveter', 'Sako', 'Bunda / kabát',
@@ -115,6 +141,10 @@ const DEFAULT_CATEGORIES = ['Tričko', 'Košeľa', 'Top', 'Mikina', 'Sveter', 'S
 
 async function init() {
   await dbClient().executeMultiple(SCHEMA);
+  for (const [table, col, def] of MIGRATIONS) {
+    const cols = (await db.all(`PRAGMA table_info(${table})`)).map((c) => c.name);
+    if (!cols.includes(col)) await db.run(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`);
+  }
   await db.batch(Object.entries(DEFAULT_SETTINGS).map(([k, v]) => ['INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)', k, v]));
   if ((await db.get('SELECT COUNT(*) AS n FROM categories')).n === 0) {
     await db.batch(DEFAULT_CATEGORIES.map((name, i) => ['INSERT OR IGNORE INTO categories (name, sort) VALUES (?, ?)', name, i]));
@@ -270,11 +300,12 @@ function publicUser(u, { withToken = false } = {}) {
   return out;
 }
 const publicItem = (i) => ({ id: i.id, name: i.name, category_id: i.category_id, category: i.category_name || null,
-  photo: viewUrl(i.photo), archived: !!i.archived, created_at: i.created_at });
+  photo: viewUrl(i.photo), archived: !!i.archived, status: i.status || 'ok', created_at: i.created_at });
 function publicDay(d) {
   if (!d) return null;
   return { date: d.date, status: d.status, offer: JSON.parse(d.offer), submitted_at: d.submitted_at,
-    outfit: d.outfit ? JSON.parse(d.outfit) : null, outfit_note: d.outfit_note, outfit_at: d.outfit_at };
+    outfit: d.outfit ? JSON.parse(d.outfit) : null, outfit_note: d.outfit_note, outfit_at: d.outfit_at,
+    proof_photo: viewUrl(d.proof_photo), proof_at: d.proof_at, proof_status: d.proof_status, proof_note: d.proof_note };
 }
 const itemsOf = async (userId, includeArchived = false) => (await db.all(`
   SELECT i.*, c.name AS category_name FROM items i LEFT JOIN categories c ON c.id = i.category_id
@@ -284,6 +315,79 @@ const validInvite = async (code) => {
   const inv = code ? await db.get('SELECT * FROM invites WHERE code = ?', String(code)) : null;
   return inv && !inv.revoked && !inv.used_by ? inv : null;
 };
+
+// ---------------------------------------------------------------------------
+// Push notifikácie (Web Push, VAPID kľúče sa vygenerujú raz a uložia do databázy)
+// ---------------------------------------------------------------------------
+let vapidCache;
+async function vapidKeys() {
+  if (vapidCache) return vapidCache;
+  let pub = await getSetting('vapid_public');
+  let priv = await getSetting('vapid_private');
+  if (!pub || !priv) {
+    const k = require('web-push').generateVAPIDKeys();
+    // INSERT OR IGNORE: pri súbežnom prvom spustení vyhrá jeden pár kľúčov
+    await db.run('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)', 'vapid_public', k.publicKey);
+    await db.run('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)', 'vapid_private', k.privateKey);
+    pub = await getSetting('vapid_public');
+    priv = await getSetting('vapid_private');
+  }
+  return (vapidCache = { pub, priv });
+}
+
+// target: { admin: true } alebo { userId }. Chyby sa len zapíšu – notifikácia nesmie zhodiť požiadavku.
+async function notify(target, { title, body, url = '/', tag }) {
+  try {
+    const subs = target.admin
+      ? await db.all("SELECT * FROM push_subs WHERE owner = 'admin'")
+      : await db.all("SELECT * FROM push_subs WHERE owner = 'user' AND user_id = ?", target.userId);
+    if (!subs.length) return 0;
+    const webpush = require('web-push');
+    const { pub, priv } = await vapidKeys();
+    const subject = (await getSetting('push_subject')) || 'mailto:admin@example.com';
+    const payload = JSON.stringify({ title, body, url, tag });
+    let sent = 0;
+    await Promise.all(subs.map(async (sub) => {
+      try {
+        await webpush.sendNotification({ endpoint: sub.endpoint, keys: JSON.parse(sub.keys) }, payload,
+          { vapidDetails: { subject, publicKey: pub, privateKey: priv }, TTL: 24 * 3600, timeout: 8000 });
+        sent++;
+      } catch (e) {
+        // Neplatný odber (odinštalovaná appka, zrušené povolenie) sa zmaže.
+        if (e.statusCode === 404 || e.statusCode === 410) await db.run('DELETE FROM push_subs WHERE endpoint = ?', sub.endpoint);
+        else console.error('push', e.statusCode || e.message);
+      }
+    }));
+    return sent;
+  } catch (e) {
+    console.error('notify', e);
+    return 0;
+  }
+}
+
+// Pripomienky: večer pred uzávierkou (kto neposlal ponuku) a ráno (dnešný outfit, fotka v ňom).
+// Každá sa pošle najviac raz – kľúč v tabuľke notified.
+async function runReminders(kind) {
+  const cycle = await currentCycle();
+  const users = await db.all('SELECT id, name FROM users WHERE active = 1');
+  let sent = 0;
+  for (const u of users) {
+    const date = kind === 'evening' ? cycle.target : cycle.today;
+    const key = `${kind}:${date}:${u.id}`;
+    if (await db.get('SELECT 1 AS x FROM notified WHERE key = ?', key)) continue;
+    const day = await getDay(u.id, date);
+    let msg = null;
+    if (kind === 'evening' && !cycle.passed && !day) {
+      msg = { title: 'Nezabudni na ponuku', body: `Do ${cycle.deadlineLabel} označ, z čoho sa má zajtra vyberať.`, url: '/app', tag: 'reminder' };
+    } else if (kind === 'morning' && day?.outfit && !day.proof_photo) {
+      msg = { title: 'Dnešný outfit je pripravený', body: 'Obleč sa a odfoť sa v ňom – nech admin vidí, že sedí.', url: '/app', tag: 'morning' };
+    }
+    if (!msg) continue;
+    await db.run('INSERT OR IGNORE INTO notified (key, created_at) VALUES (?, ?)', key, nowIso());
+    sent += await notify({ userId: u.id }, msg);
+  }
+  return sent;
+}
 
 // ---------------------------------------------------------------------------
 // Aplikácia
@@ -336,6 +440,46 @@ app.get('/api/whoami', async (req, res) => {
     blob_access: blob.access, blob_error: blob.error, blob_mode: BLOB_MODE,
     admin_password_missing: !(await getSetting('admin_password')) });
 });
+app.get('/api/push/key', async (_req, res) => {
+  res.json({ key: (await vapidKeys()).pub });
+});
+app.post('/api/push/subscribe', async (req, res) => {
+  const sub = req.body?.subscription;
+  if (!sub?.endpoint || !sub?.keys?.p256dh || !sub?.keys?.auth || !/^https:\/\//.test(sub.endpoint)) throw bad('Neplatný odber.');
+  const asAdmin = req.body?.as === 'admin' && (await adminSession(req));
+  const user = asAdmin ? null : await currentUser(req);
+  if (!asAdmin && !user) throw new HttpError(401, 'Prihlás sa.');
+  // Adresa appky slúži ako kontakt pre push služby (VAPID subject).
+  if (!(await getSetting('push_subject'))) await setSetting('push_subject', `https://${req.headers.host}`);
+  await db.run(`INSERT INTO push_subs (endpoint, owner, user_id, keys, created_at) VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(endpoint) DO UPDATE SET owner = excluded.owner, user_id = excluded.user_id, keys = excluded.keys`,
+  sub.endpoint, asAdmin ? 'admin' : 'user', user?.id ?? null, JSON.stringify({ p256dh: sub.keys.p256dh, auth: sub.keys.auth }), nowIso());
+  res.json({ ok: true });
+});
+app.post('/api/push/unsubscribe', async (req, res) => {
+  await db.run('DELETE FROM push_subs WHERE endpoint = ?', String(req.body?.endpoint || ''));
+  res.json({ ok: true });
+});
+app.post('/api/push/test', async (req, res) => {
+  const asAdmin = req.body?.as === 'admin' && (await adminSession(req));
+  const user = asAdmin ? null : await currentUser(req);
+  if (!asAdmin && !user) throw new HttpError(401, 'Prihlás sa.');
+  const sent = await notify(asAdmin ? { admin: true } : { userId: user.id },
+    { title: 'Style Picker', body: 'Notifikácie fungujú ✓', url: asAdmin ? '/admin' : '/app', tag: 'test' });
+  res.json({ ok: true, sent });
+});
+
+// Vercel Cron (vercel.json) – pripomienky. Chránené CRON_SECRET, inak len volanie z Vercel Cron alebo admin.
+app.get('/api/cron/:kind', async (req, res) => {
+  const kind = req.params.kind;
+  if (!['evening', 'morning'].includes(kind)) throw notFound('Nenájdené.');
+  const secret = process.env.CRON_SECRET;
+  const ok = secret ? req.headers.authorization === `Bearer ${secret}`
+    : /vercel-cron/i.test(req.headers['user-agent'] || '') || (await adminSession(req));
+  if (!ok) throw new HttpError(401, 'Nepovolené.');
+  res.json({ ok: true, sent: await runReminders(kind) });
+});
+
 app.post('/api/admin/login', async (req, res) => {
   const stored = await getSetting('admin_password');
   if (!stored) throw new HttpError(401, 'Admin heslo nie je nastavené – pridaj premennú ADMIN_PASSWORD a nasaď znova.');
@@ -527,6 +671,8 @@ me.get('/', async (req, res) => {
     today: publicDay(await getDay(req.user.id, cycle.today)),
     tomorrow: publicDay(await getDay(req.user.id, cycle.target)),
     items: await itemsOf(req.user.id, true),
+    comments: await db.all('SELECT id, date, author, text, created_at FROM comments WHERE user_id = ? AND date IN (?, ?) ORDER BY id',
+      req.user.id, cycle.today, cycle.target),
   });
 });
 
@@ -551,8 +697,14 @@ me.patch('/items/:id', async (req, res) => {
   const name = b.name !== undefined ? String(b.name).trim().slice(0, 80) : item.name;
   const categoryId = b.category_id !== undefined ? await validCategory(Number(b.category_id)) : item.category_id;
   const archived = b.archived !== undefined ? (b.archived ? 1 : 0) : item.archived;
+  const status = b.status !== undefined ? (['ok', 'laundry', 'lent'].includes(b.status) ? b.status : 'ok') : item.status;
+  // Nová fotka (napr. po odstránení pozadia) – stará sa zmaže.
+  const photo = b.photo !== undefined ? fileUrl(b.photo) : item.photo;
+  if (!photo) throw bad('Neplatná fotka.');
   if (!name) throw bad('Názov nemôže byť prázdny.');
-  await db.run('UPDATE items SET name = ?, category_id = ?, archived = ? WHERE id = ?', name, categoryId, archived, item.id);
+  await db.run('UPDATE items SET name = ?, category_id = ?, archived = ?, status = ?, photo = ? WHERE id = ?',
+    name, categoryId, archived, status, photo, item.id);
+  if (photo !== item.photo) await removeFile(item.photo);
   res.json({ ok: true });
 });
 
@@ -561,8 +713,8 @@ me.post('/submit', async (req, res) => {
   const cycle = await currentCycle();
   const ids = [...new Set((req.body?.item_ids || []).map(Number))];
   if (ids.length === 0) throw bad('Označ aspoň jeden kúsok, z ktorého sa má vyberať.');
-  const owned = new Set((await db.all('SELECT id FROM items WHERE user_id = ? AND archived = 0', req.user.id)).map((r) => r.id));
-  if (!ids.every((id) => owned.has(id))) throw bad('Niektorý z vybraných kúskov neexistuje.');
+  const owned = new Set((await db.all("SELECT id FROM items WHERE user_id = ? AND archived = 0 AND status = 'ok'", req.user.id)).map((r) => r.id));
+  if (!ids.every((id) => owned.has(id))) throw bad('Niektorý z vybraných kúskov neexistuje alebo je v prádle / požičaný.');
 
   const existing = await getDay(req.user.id, cycle.target);
   if (existing?.outfit) throw bad('Outfit na zajtra je už vybraný – ponuku už nemôžeš meniť.');
@@ -584,6 +736,9 @@ me.post('/submit', async (req, res) => {
       ON CONFLICT(user_id, date) DO UPDATE SET status = excluded.status, offer = excluded.offer, submitted_at = excluded.submitted_at`,
     req.user.id, cycle.target, status, JSON.stringify(ids), nowIso()],
   ]);
+  if (!hasOffer) {
+    await notify({ admin: true }, { title: `${req.user.name} poslal/a ponuku`, body: `${ids.length} kúskov na ${cycle.target}${status === 'late_token' ? ' (neskoro, za token)' : ''} – vyber outfit.`, url: '/admin', tag: `offer-${req.user.id}` });
+  }
   res.json({ ok: true, status });
 });
 
@@ -598,21 +753,79 @@ me.post('/self', async (req, res) => {
   res.json({ ok: true });
 });
 
+// Či osoba môže úlohu odovzdať: nikdy dve naraz na kontrole, 'once' = raz, 'weekly' = raz za týždeň.
+async function taskAvailability(task, userId) {
+  const subs = await db.all('SELECT status, created_at FROM task_submissions WHERE task_id = ? AND user_id = ?', task.id, userId);
+  if (subs.some((x) => x.status === 'pending')) return { ok: false, reason: 'Video čaká na vyhodnotenie' };
+  const done = subs.filter((x) => x.status !== 'rejected');
+  if (task.repeat === 'once' && done.length) return { ok: false, reason: 'Už splnené' };
+  if (task.repeat === 'weekly') {
+    const monday = mondayOf(new Date());
+    if (done.some((x) => new Date(x.created_at) >= monday)) return { ok: false, reason: 'Tento týždeň už splnené' };
+  }
+  return { ok: true };
+}
+const assignedTo = (task, userId) => !task.assignees || JSON.parse(task.assignees).includes(userId);
+
 me.get('/tasks', async (req, res) => {
+  const tasks = (await db.all('SELECT * FROM tasks WHERE active = 1 ORDER BY created_at DESC')).filter((t) => assignedTo(t, req.user.id));
+  const out = [];
+  for (const t of tasks) {
+    const av = await taskAvailability(t, req.user.id);
+    out.push({ id: t.id, title: t.title, description: t.description, reward: t.reward, repeat: t.repeat, available: av.ok, reason: av.reason || null });
+  }
   res.json({
-    tasks: await db.all('SELECT id, title, description, reward FROM tasks WHERE active = 1 ORDER BY created_at DESC'),
+    tasks: out,
     submissions: (await db.all(`SELECT s.*, t.title FROM task_submissions s JOIN tasks t ON t.id = s.task_id
-      WHERE s.user_id = ? ORDER BY s.created_at DESC`, req.user.id)).map((s) => ({ ...s, video: viewUrl(s.video) })),
+      WHERE s.user_id = ? ORDER BY s.created_at DESC`, req.user.id)).map((x) => ({ ...x, video: viewUrl(x.video) })),
   });
 });
 
 me.post('/tasks/:id/submit', async (req, res) => {
   const task = await db.get('SELECT * FROM tasks WHERE id = ? AND active = 1', Number(req.params.id));
   const video = fileUrl(req.body?.video);
-  if (!task) throw notFound('Úloha neexistuje.');
+  if (!task || !assignedTo(task, req.user.id)) throw notFound('Úloha neexistuje.');
+  const av = await taskAvailability(task, req.user.id);
+  if (!av.ok) throw bad(`${av.reason}.`);
   if (!video) throw bad('Nahraj video, na ktorom je vidieť, ako úlohu robíš.');
   await db.run('INSERT INTO task_submissions (task_id, user_id, video, note, created_at) VALUES (?, ?, ?, ?, ?)',
     task.id, req.user.id, video, String(req.body?.note || '').slice(0, 500), nowIso());
+  await notify({ admin: true }, { title: `Nové video: ${task.title}`, body: `${req.user.name} poslal/a video na vyhodnotenie.`, url: '/admin#tasks', tag: 'task' });
+  res.json({ ok: true });
+});
+
+// Fotka v outfite („mám to na sebe“) – len pre deň, na ktorý admin vybral outfit.
+me.post('/proof', async (req, res) => {
+  const cycle = await currentCycle();
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(req.body?.date || '') ? req.body.date : cycle.today;
+  if (date > cycle.today) throw bad('Fotku v outfite pošli až v deň, keď ho máš na sebe.');
+  const day = await getDay(req.user.id, date);
+  if (!day?.outfit) throw bad('Na tento deň nemáš vybraný outfit.');
+  if (day.proof_status === 'approved') throw bad('Fotka už bola schválená.');
+  const photo = fileUrl(req.body?.photo);
+  if (!photo) throw bad('Chýba fotka.');
+  await db.run("UPDATE days SET proof_photo = ?, proof_at = ?, proof_status = 'pending', proof_note = NULL WHERE user_id = ? AND date = ?",
+    photo, nowIso(), req.user.id, date);
+  if (day.proof_photo && day.proof_photo !== photo) await removeFile(day.proof_photo);
+  await notify({ admin: true }, { title: `${req.user.name} sa odfotil/a v outfite`, body: 'Pozri, či sedí, a schváľ to.', url: '/admin', tag: `proof-${req.user.id}` });
+  res.json({ ok: true });
+});
+
+// História outfitov (aj naplánované dopredu)
+me.get('/history', async (req, res) => {
+  res.json((await db.all('SELECT * FROM days WHERE user_id = ? AND outfit IS NOT NULL ORDER BY date DESC LIMIT 90', req.user.id)).map(publicDay));
+});
+
+// Komentáre k outfitu na daný deň
+me.get('/comments/:date', async (req, res) => {
+  res.json(await db.all('SELECT id, date, author, text, created_at FROM comments WHERE user_id = ? AND date = ? ORDER BY id', req.user.id, req.params.date));
+});
+me.post('/comments/:date', async (req, res) => {
+  const text = String(req.body?.text || '').trim().slice(0, 1000);
+  if (!text) throw bad('Napíš správu.');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(req.params.date)) throw bad('Neplatný dátum.');
+  await db.run('INSERT INTO comments (user_id, date, author, text, created_at) VALUES (?, ?, ?, ?, ?)', req.user.id, req.params.date, 'user', text, nowIso());
+  await notify({ admin: true }, { title: `Správa od ${req.user.name}`, body: text.slice(0, 140), url: '/admin', tag: `comment-${req.user.id}` });
   res.json({ ok: true });
 });
 
@@ -641,7 +854,9 @@ admin.get('/overview', async (_req, res) => {
       tomorrow: dayOf(id, cycle.target), today: dayOf(id, cycle.today) });
   }
   const pending = (await db.get("SELECT COUNT(*) AS n FROM task_submissions WHERE status = 'pending'")).n;
-  res.json({ cycle, users, pending_tasks: pending });
+  const proofs = (await db.all(`SELECT d.*, u.name AS user_name FROM days d JOIN users u ON u.id = d.user_id
+    WHERE d.proof_status = 'pending' ORDER BY d.proof_at`)).map((d) => ({ ...publicDay(d), user_id: d.user_id, user_name: d.user_name }));
+  res.json({ cycle, users, pending_tasks: pending, proofs });
 });
 
 async function userOr404(id) {
@@ -656,7 +871,7 @@ admin.get('/users/:id', async (req, res) => {
     user: publicUser(u, { withToken: true }),
     cycle: await currentCycle(),
     items: await itemsOf(u.id, true),
-    days: (await db.all('SELECT * FROM days WHERE user_id = ? ORDER BY date DESC LIMIT 30', u.id)).map(publicDay),
+    days: (await db.all('SELECT * FROM days WHERE user_id = ? ORDER BY date DESC LIMIT 60', u.id)).map(publicDay),
     transactions: await db.all('SELECT amount, reason, created_at FROM transactions WHERE user_id = ? ORDER BY id DESC LIMIT 100', u.id),
   });
 });
@@ -680,12 +895,16 @@ admin.delete('/users/:id', async (req, res) => {
   if (!u) throw notFound('Osoba neexistuje.');
   const files = [u.front_photo, u.back_photo,
     ...(await db.all('SELECT photo FROM items WHERE user_id = ?', id)).map((r) => r.photo),
-    ...(await db.all('SELECT video FROM task_submissions WHERE user_id = ?', id)).map((r) => r.video)];
+    ...(await db.all('SELECT video FROM task_submissions WHERE user_id = ?', id)).map((r) => r.video),
+    ...(await db.all('SELECT proof_photo FROM days WHERE user_id = ? AND proof_photo IS NOT NULL', id)).map((r) => r.proof_photo)];
   await db.batch([
     ['DELETE FROM items WHERE user_id = ?', id],
     ['DELETE FROM days WHERE user_id = ?', id],
     ['DELETE FROM transactions WHERE user_id = ?', id],
     ['DELETE FROM task_submissions WHERE user_id = ?', id],
+    ['DELETE FROM templates WHERE user_id = ?', id],
+    ['DELETE FROM comments WHERE user_id = ?', id],
+    ["DELETE FROM push_subs WHERE owner = 'user' AND user_id = ?", id],
     ['DELETE FROM users WHERE id = ?', id],
     ['UPDATE invites SET used_by = NULL, revoked = 1 WHERE used_by = ?', id],
   ]);
@@ -723,6 +942,9 @@ admin.put('/users/:id/outfit/:date', async (req, res) => {
   await db.run(`INSERT INTO days (user_id, date, status, outfit, outfit_note, outfit_at) VALUES (?, ?, 'admin', ?, ?, ?)
     ON CONFLICT(user_id, date) DO UPDATE SET outfit = excluded.outfit, outfit_note = excluded.outfit_note, outfit_at = excluded.outfit_at`,
   u.id, date, JSON.stringify(outfit), String(req.body?.note || '').slice(0, 500), nowIso());
+  const cycle = await currentCycle();
+  const when = date === cycle.today ? 'na dnes' : date === cycle.target ? 'na zajtra' : `na ${date}`;
+  await notify({ userId: u.id }, { title: `Outfit ${when} je vybraný ✨`, body: 'Pozri sa, čo si oblečieš.', url: '/app', tag: `outfit-${date}` });
   res.json({ ok: true });
 });
 
@@ -732,6 +954,106 @@ admin.delete('/users/:id/outfit/:date', async (req, res) => {
   if (day?.status === 'admin') await db.run('DELETE FROM days WHERE user_id = ? AND date = ?', id, req.params.date);
   else await db.run('UPDATE days SET outfit = NULL, outfit_note = NULL, outfit_at = NULL WHERE user_id = ? AND date = ?', id, req.params.date);
   res.json({ ok: true });
+});
+
+// ---- fotka v outfite: schválenie alebo zamietnutie (voliteľne so stratou tokenov)
+admin.post('/users/:id/proof/:date', async (req, res) => {
+  const u = await userOr404(req.params.id);
+  const day = await getDay(u.id, req.params.date);
+  if (!day?.proof_photo) throw notFound('Fotka neexistuje.');
+  const decision = req.body?.decision;
+  if (!['approved', 'rejected'].includes(decision)) throw bad('Neplatné rozhodnutie.');
+  const penalty = Math.max(0, Math.trunc(Number(req.body?.penalty) || 0));
+  const note = String(req.body?.note || '').slice(0, 500);
+  await db.run('UPDATE days SET proof_status = ?, proof_note = ? WHERE user_id = ? AND date = ?', decision, note, u.id, day.date);
+  if (decision === 'rejected' && penalty > 0) await addTransaction(u.id, -penalty, `Outfit nedodržaný (${day.date})`);
+  await notify({ userId: u.id }, decision === 'approved'
+    ? { title: 'Outfit schválený ✓', body: note || 'Sedí to, super!', url: '/app', tag: 'proof' }
+    : { title: 'Outfit neschválený', body: `${note || 'Nesedí to s vybraným outfitom.'}${penalty ? ` (−${penalty} ${penalty === 1 ? 'token' : 'tokeny'})` : ''}`, url: '/app', tag: 'proof' });
+  res.json({ ok: true });
+});
+
+// ---- šablóny outfitov (uložené kombinácie pre konkrétnu osobu)
+admin.get('/users/:id/templates', async (req, res) => {
+  res.json((await db.all('SELECT * FROM templates WHERE user_id = ? ORDER BY created_at DESC', Number(req.params.id)))
+    .map((t) => ({ id: t.id, name: t.name, outfit: JSON.parse(t.outfit), created_at: t.created_at })));
+});
+admin.post('/users/:id/templates', async (req, res) => {
+  const u = await userOr404(req.params.id);
+  const name = String(req.body?.name || '').trim().slice(0, 60);
+  if (!name) throw bad('Pomenuj šablónu.');
+  const valid = new Set((await db.all('SELECT id FROM items WHERE user_id = ?', u.id)).map((r) => r.id));
+  const items = [...new Set((req.body?.items || []).map(Number))].filter((id) => valid.has(id));
+  if (!items.length) throw bad('Šablóna musí obsahovať aspoň jeden kúsok.');
+  const outfit = { items, front: sanitizeLayers(req.body?.front, valid), back: sanitizeLayers(req.body?.back, valid), note: String(req.body?.note || '').slice(0, 500) };
+  await db.run('INSERT INTO templates (user_id, name, outfit, created_at) VALUES (?, ?, ?, ?)', u.id, name, JSON.stringify(outfit), nowIso());
+  res.json({ ok: true });
+});
+admin.delete('/templates/:id', async (req, res) => {
+  await db.run('DELETE FROM templates WHERE id = ?', Number(req.params.id));
+  res.json({ ok: true });
+});
+
+// ---- štatistiky osoby
+admin.get('/users/:id/stats', async (req, res) => {
+  const u = await userOr404(req.params.id);
+  const cycle = await currentCycle();
+  const days = await db.all('SELECT * FROM days WHERE user_id = ?', u.id);
+  const items = await itemsOf(u.id, false);
+  const wear = new Map();
+  let outfits = 0;
+  for (const d of days) {
+    if (!d.outfit || d.date > cycle.today) continue;
+    outfits++;
+    for (const id of JSON.parse(d.outfit).items) wear.set(id, (wear.get(id) || 0) + 1);
+  }
+  const byId = new Map(items.map((i) => [i.id, i]));
+  const top = [...wear.entries()].filter(([id]) => byId.has(id)).sort((a, b) => b[1] - a[1]).slice(0, 6)
+    .map(([id, n]) => ({ ...byId.get(id), count: n }));
+  const never = items.filter((i) => !wear.has(i.id));
+  const count = (f) => days.filter(f).length;
+  const tx = await db.all('SELECT amount FROM transactions WHERE user_id = ?', u.id);
+  res.json({
+    outfits,
+    on_time: count((d) => d.status === 'submitted'),
+    late: count((d) => d.status === 'late_token'),
+    self: count((d) => d.status === 'self'),
+    proofs_ok: count((d) => d.proof_status === 'approved'),
+    proofs_bad: count((d) => d.proof_status === 'rejected'),
+    tasks_done: (await db.get("SELECT COUNT(*) AS n FROM task_submissions WHERE user_id = ? AND status IN ('approved', 'exception')", u.id)).n,
+    tokens_earned: tx.filter((t) => t.amount > 0).reduce((a, t) => a + t.amount, 0),
+    tokens_spent: -tx.filter((t) => t.amount < 0).reduce((a, t) => a + t.amount, 0),
+    top, never,
+  });
+});
+
+// ---- komentáre k outfitu; voliteľne povolená výnimka za tokeny
+admin.get('/users/:id/comments/:date', async (req, res) => {
+  res.json(await db.all('SELECT id, date, author, text, created_at FROM comments WHERE user_id = ? AND date = ? ORDER BY id', Number(req.params.id), req.params.date));
+});
+admin.post('/users/:id/comments/:date', async (req, res) => {
+  const u = await userOr404(req.params.id);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(req.params.date)) throw bad('Neplatný dátum.');
+  const charge = Math.max(0, Math.trunc(Number(req.body?.charge) || 0));
+  let text = String(req.body?.text || '').trim().slice(0, 1000);
+  if (charge > 0) text = `✓ Výnimka povolená za ${charge} ${charge === 1 ? 'token' : charge < 5 ? 'tokeny' : 'tokenov'}${text ? ` – ${text}` : ''}`;
+  if (!text) throw bad('Napíš správu.');
+  if (charge > 0) await addTransaction(u.id, -charge, `Výnimka k outfitu (${req.params.date})`);
+  await db.run('INSERT INTO comments (user_id, date, author, text, created_at) VALUES (?, ?, ?, ?, ?)', u.id, req.params.date, 'admin', text, nowIso());
+  await notify({ userId: u.id }, { title: 'Správa od admina', body: text.slice(0, 140), url: '/app', tag: 'comment' });
+  res.json({ ok: true });
+});
+
+// ---- záloha všetkých dát (bez hesla, prihlásení a súkromného kľúča notifikácií)
+admin.get('/export', async (_req, res) => {
+  const tables = ['users', 'items', 'categories', 'days', 'transactions', 'tasks', 'task_submissions', 'invites', 'templates', 'comments'];
+  const out = { app: 'style-picker', exported_at: nowIso(), settings: {} };
+  for (const t of tables) out[t] = await db.all(`SELECT * FROM ${t}`);
+  for (const r of await db.all('SELECT key, value FROM settings')) {
+    if (!['admin_password', 'vapid_private'].includes(r.key)) out.settings[r.key] = r.value;
+  }
+  res.setHeader('content-disposition', `attachment; filename="style-picker-zaloha-${dateStr(new Date())}.json"`);
+  res.json(out);
 });
 
 // ---- pozvánky ----
@@ -752,24 +1074,31 @@ admin.delete('/invites/:code', async (req, res) => {
 // ---- úlohy ----
 admin.get('/tasks', async (_req, res) => {
   res.json({
-    tasks: await db.all('SELECT * FROM tasks ORDER BY active DESC, created_at DESC'),
+    tasks: (await db.all('SELECT * FROM tasks ORDER BY active DESC, created_at DESC')).map((t) => ({ ...t, assignees: t.assignees ? JSON.parse(t.assignees) : [] })),
+    users: await db.all('SELECT id, name FROM users WHERE active = 1 ORDER BY name'),
     submissions: (await db.all(`SELECT s.*, t.title, t.reward, u.name AS user_name FROM task_submissions s
       JOIN tasks t ON t.id = s.task_id JOIN users u ON u.id = s.user_id
       ORDER BY (s.status = 'pending') DESC, s.created_at DESC LIMIT 200`)).map((s) => ({ ...s, video: viewUrl(s.video) })),
   });
 });
+const parseRepeat = (v) => (['unlimited', 'once', 'weekly'].includes(v) ? v : 'unlimited');
+const parseAssignees = (v) => (Array.isArray(v) && v.length ? JSON.stringify([...new Set(v.map(Number).filter(Boolean))]) : null);
 admin.post('/tasks', async (req, res) => {
   const title = String(req.body?.title || '').trim().slice(0, 120);
   if (!title) throw bad('Zadaj názov úlohy.');
   const reward = Math.max(0, Math.trunc(Number(req.body?.reward) || 0));
-  await db.run('INSERT INTO tasks (title, description, reward, created_at) VALUES (?, ?, ?, ?)',
-    title, String(req.body?.description || '').slice(0, 2000), reward, nowIso());
+  await db.run('INSERT INTO tasks (title, description, reward, assignees, repeat, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+    title, String(req.body?.description || '').slice(0, 2000), reward, parseAssignees(req.body?.assignees), parseRepeat(req.body?.repeat), nowIso());
+  const who = req.body?.assignees?.length ? req.body.assignees.map(Number) : (await db.all('SELECT id FROM users WHERE active = 1')).map((r) => r.id);
+  await Promise.all(who.map((id) => notify({ userId: id }, { title: 'Nová úloha', body: `${title} (+${reward})`, url: '/app', tag: 'task-new' })));
   res.json({ ok: true });
 });
 admin.patch('/tasks/:id', async (req, res) => {
   const t = await db.get('SELECT * FROM tasks WHERE id = ?', Number(req.params.id));
   if (!t) throw notFound('Úloha neexistuje.');
   const b = req.body || {};
+  if (b.assignees !== undefined) await db.run('UPDATE tasks SET assignees = ? WHERE id = ?', parseAssignees(b.assignees), t.id);
+  if (b.repeat !== undefined) await db.run('UPDATE tasks SET repeat = ? WHERE id = ?', parseRepeat(b.repeat), t.id);
   await db.run('UPDATE tasks SET title = ?, description = ?, reward = ?, active = ? WHERE id = ?',
     b.title !== undefined ? String(b.title).trim().slice(0, 120) || t.title : t.title,
     b.description !== undefined ? String(b.description).slice(0, 2000) : t.description,
@@ -795,6 +1124,9 @@ admin.post('/submissions/:id/review', async (req, res) => {
     const label = decision === 'exception' ? 'Výnimka' : 'Splnená úloha';
     await addTransaction(s.user_id, granted, `${label}: ${s.title}${bonus ? ` (+${bonus} extra)` : ''}`);
   }
+  await notify({ userId: s.user_id }, decision === 'rejected'
+    ? { title: `Úloha nesplnená: ${s.title}`, body: String(req.body?.admin_note || 'Skús to znova.'), url: '/app', tag: 'review' }
+    : { title: `Úloha uznaná: ${s.title} ✓`, body: `+${granted} ${granted === 1 ? 'token' : granted < 5 ? 'tokeny' : 'tokenov'}`, url: '/app', tag: 'review' });
   res.json({ ok: true, granted });
 });
 
@@ -859,4 +1191,4 @@ app.use((err, _req, res, _next) => {
   res.status(status).json({ error: status >= 500 && !(err instanceof HttpError) ? 'Chyba servera.' : err.message });
 });
 
-module.exports = { app, db, ready, currentCycle };
+module.exports = { app, db, ready, currentCycle, runReminders };

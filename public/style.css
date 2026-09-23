@@ -672,3 +672,58 @@ details.more[open] summary::before { transform: rotate(90deg); }
 /* keď je na obrazovke lišta s ponukou, hláška sa zobrazí nad ňou */
 body:has(.actionbar) .toast { bottom: 110px; }
 @media (max-width: 760px) { body:has(.actionbar) .toast { bottom: calc(var(--nav-h) + var(--safe-b) + 90px); } }
+
+/* ===========================================================================
+   Rozšírenia: kalendár, kontrola fotiek, správy, štatistiky, história
+   =========================================================================== */
+.week { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; padding: 2px 2px 8px; margin-bottom: 4px; }
+.week::-webkit-scrollbar { display: none; }
+.wday { flex: none; width: 54px; display: grid; justify-items: center; gap: 2px; padding: 8px 4px; border-radius: 12px;
+  border: 1px solid var(--line); background: var(--surface); color: var(--text); font: inherit; cursor: pointer; transition: border-color .2s, background .2s; }
+.wday span { font-size: .68rem; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.wday b { font-size: 1.05rem; }
+.wday.today span { color: var(--accent); font-weight: 700; }
+.wday.active { background: var(--text); border-color: var(--text); color: var(--bg); }
+.wday.active span { color: inherit; opacity: .75; }
+.dot { width: 6px; height: 6px; border-radius: 50%; background: var(--line-strong); }
+.dot.outfit { background: var(--accent); }
+.dot.offer { background: var(--ok); }
+.dot.self { background: var(--danger); }
+.dot.none { background: transparent; box-shadow: inset 0 0 0 1px var(--line-strong); }
+
+.proof-grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr)); }
+.proof { display: flex; gap: 14px; align-items: flex-start; }
+.proof img { width: 120px; aspect-ratio: 3/4; object-fit: cover; border-radius: 12px; border: 1px solid var(--line); background: var(--tile-bg); flex: none; }
+.proof .badge { display: inline-flex; }
+@media (max-width: 420px) { .proof img { width: 96px; } }
+
+.mini-items { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 6px; }
+.mini { flex: none; width: 88px; display: grid; gap: 4px; font-size: .72rem; color: var(--muted); }
+.mini img { width: 88px; height: 100px; object-fit: contain; border-radius: 10px; background: var(--tile-bg); border: 1px solid var(--line); padding: 4px; }
+.mini span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.thread { display: grid; gap: 10px; max-height: 360px; overflow-y: auto; padding: 2px; }
+.msg { display: grid; justify-items: start; max-width: 85%; }
+.msg.mine { justify-self: end; justify-items: end; }
+.msg .bubble { padding: 9px 13px; border-radius: 16px 16px 16px 4px; background: var(--surface-2); font-size: .92rem; white-space: pre-wrap; word-break: break-word; }
+.msg.mine .bubble { border-radius: 16px 16px 4px 16px; background: var(--accent); color: var(--on-accent); }
+.msg .meta { font-size: .7rem; color: var(--muted); margin-top: 3px; }
+
+.tile.unavail .img img { opacity: .45 !important; filter: grayscale(.6); }
+.state-label { position: absolute; left: 50%; bottom: 8px; transform: translateX(-50%); z-index: 1; padding: 3px 9px; border-radius: 99px;
+  font-size: .68rem; font-weight: 700; background: var(--warn-soft); color: var(--warn); white-space: nowrap; }
+
+.hist { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 160px), 1fr)); }
+.hist-card { cursor: pointer; border-radius: 16px; border: 1px solid var(--line); background: var(--surface); overflow: hidden; transition: transform .2s var(--ease), box-shadow .2s; }
+@media (hover: hover) { .hist-card:hover { transform: translateY(-2px); box-shadow: var(--shadow); } }
+.hist-card .stage { border: 0; border-radius: 0; max-width: none; pointer-events: none; }
+.hist-card .hc-meta { padding: 10px 12px; border-top: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; gap: 6px; }
+.hist-card .hc-meta b { font-size: .85rem; }
+.hist-card.future { border-style: dashed; }
+.segmented.full { display: flex; width: 100%; }
+.segmented.full .chip { flex: 1; }
+.bg-note { font-size: .78rem; color: var(--muted); }
+/* šachovnica pod priehľadným obrázkom */
+.checker { background-color: #fff; background-image: linear-gradient(45deg, #e9e9e9 25%, transparent 25%), linear-gradient(-45deg, #e9e9e9 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #e9e9e9 75%), linear-gradient(-45deg, transparent 75%, #e9e9e9 75%); background-size: 18px 18px; background-position: 0 0, 0 9px, 9px -9px, -9px 0; }
+.hist-card .hc-meta { flex-wrap: wrap; }
+.hist-card .hc-meta b { white-space: nowrap; }

@@ -132,6 +132,8 @@ function renderStage(personPhoto, layers, itemsById) {
   return stage;
 }
 
+const ITEM_STATUS = { ok: 'Dostupné', laundry: 'V prádle', lent: 'Požičané' };
+
 function itemTile(item, { selected, dim, offered, onclick, draggable } = {}) {
   const tile = h('div.tile' + (selected ? '.selected' : '') + (dim ? '.dim' : '') + (offered ? '.offered' : ''), {
     onclick, draggable: draggable ? 'true' : undefined, 'data-id': item.id,
@@ -140,6 +142,11 @@ function itemTile(item, { selected, dim, offered, onclick, draggable } = {}) {
       onload: (e) => e.currentTarget.classList.add('loaded'), onerror: (e) => e.currentTarget.classList.add('loaded') })),
     h('div.meta', {}, [h('b', {}, item.name), h('small', {}, item.category || 'Bez kategórie')]),
   ]);
+  // Kúsok v prádle / požičaný – viditeľný štítok
+  if (item.status && item.status !== 'ok') {
+    tile.classList.add('unavail');
+    $('.img', tile).append(h('span.state-label', {}, ITEM_STATUS[item.status]));
+  }
   // Obrázok z cache je hneď hotový – bez zbytočného prelínania pri prekreslení.
   const img = $('img', tile);
   if (img.complete && img.naturalWidth) img.classList.add('loaded');
@@ -336,7 +343,9 @@ function photoPicker({ hint = 'Zatiaľ žiadna fotka', captureMode = 'environmen
     h('button.btn', { type: 'button', onclick: () => cam.click() }, [icon('camera'), 'Odfotiť']),
     h('button.btn', { type: 'button', onclick: () => gal.click() }, [icon('image'), 'Z galérie']),
   ]), cam, gal]);
-  return { el, file: () => file, reset: () => { file = null; preview.classList.remove('has'); preview.replaceChildren(h('div', {}, [icon('image'), h('div.small', {}, hint)])); } };
+  // set: nahradí fotku (napr. výsledkom odstránenia pozadia) – na šachovnici vidno priehľadnosť
+  const set = (f) => { file = f; preview.classList.add('has', 'checker'); preview.replaceChildren(h('img', { src: URL.createObjectURL(f), alt: '' })); };
+  return { el, file: () => file, set, reset: () => { file = null; preview.classList.remove('has', 'checker'); preview.replaceChildren(h('div', {}, [icon('image'), h('div.small', {}, hint)])); } };
 }
 
 async function shareOrCopy(url, title = 'Style Picker') {
@@ -345,4 +354,217 @@ async function shareOrCopy(url, title = 'Style Picker') {
   }
   await navigator.clipboard.writeText(url);
   toast('Skopírované');
+}
+
+// ---------------------------------------------------------------------------
+// Push notifikácie
+// ---------------------------------------------------------------------------
+const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent);
+const isStandalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+
+let swReg;
+async function registerSW() {
+  if (!('serviceWorker' in navigator)) return null;
+  try { swReg = swReg || (await navigator.serviceWorker.register('/sw.js')); } catch { swReg = null; }
+  return swReg;
+}
+registerSW();
+
+// supported: false s dôvodom (napr. iPhone bez pridania na plochu)
+async function pushState() {
+  if (!('Notification' in window) || !('PushManager' in window) || !('serviceWorker' in navigator)) {
+    return { supported: false, reason: isIOS && !isStandalone()
+      ? 'Na iPhone fungujú upozornenia až keď si appku pridáš na plochu (Zdieľať → Pridať na plochu) a otvoríš ju odtiaľ.'
+      : 'Tento prehliadač upozornenia nepodporuje.' };
+  }
+  const reg = await registerSW();
+  const sub = reg ? await reg.pushManager.getSubscription() : null;
+  return { supported: true, permission: Notification.permission, subscribed: !!sub };
+}
+
+function b64ToBytes(b64) {
+  const s = atob((b64 + '='.repeat((4 - (b64.length % 4)) % 4)).replace(/-/g, '+').replace(/_/g, '/'));
+  return Uint8Array.from(s, (c) => c.charCodeAt(0));
+}
+
+// as: 'admin' | 'user'
+async function enablePush(as) {
+  const st = await pushState();
+  if (!st.supported) throw new Error(st.reason);
+  const perm = await Notification.requestPermission();
+  if (perm !== 'granted') throw new Error('Upozornenia sú zablokované. Povoľ ich v nastaveniach prehliadača.');
+  const reg = await registerSW();
+  await navigator.serviceWorker.ready;
+  const { key } = await api('GET', '/api/push/key');
+  let sub = await reg.pushManager.getSubscription();
+  if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(key) });
+  await api('POST', '/api/push/subscribe', { subscription: sub.toJSON(), as });
+  try { localStorage.setItem('push-asked', '1'); } catch { /* bez úložiska */ }
+}
+async function disablePush() {
+  const reg = await registerSW();
+  const sub = reg && (await reg.pushManager.getSubscription());
+  if (sub) { await api('POST', '/api/push/unsubscribe', { endpoint: sub.endpoint }); await sub.unsubscribe(); }
+}
+
+// Karta s nastavením upozornení (pre admina aj osobu)
+function pushCard(as, description) {
+  const body = h('div', {}, h('p.muted.small', {}, 'Načítavam…'));
+  const card = h('div.card', {}, [h('h2', {}, 'Upozornenia'), h('p.small.muted', {}, description), body]);
+  const draw = async () => {
+    const st = await pushState();
+    if (!st.supported) { body.replaceChildren(h('div.tip', {}, [icon('phone'), h('div', {}, st.reason)])); return; }
+    if (st.subscribed && st.permission === 'granted') {
+      body.replaceChildren(h('div.row', {}, [
+        h('span.badge.ok', {}, [icon('check'), 'Zapnuté na tomto zariadení']),
+        h('button.btn.small', { onclick: guarded(async () => { const r = await api('POST', '/api/push/test', { as }); toast(r.sent ? 'Skúšobné upozornenie odoslané' : 'Nepodarilo sa odoslať'); }) }, 'Poslať skúšobné'),
+        h('button.btn.small.ghost', { onclick: guarded(async () => { await disablePush(); toast('Upozornenia vypnuté'); draw(); }) }, 'Vypnúť'),
+      ]));
+    } else if (st.permission === 'denied') {
+      body.replaceChildren(h('div.notice.warn', {}, 'Upozornenia sú v prehliadači zablokované. Povoľ ich v nastaveniach stránky (ikona zámku vedľa adresy).'));
+    } else {
+      body.replaceChildren(h('button.btn.primary', { onclick: guarded(async () => { await enablePush(as); toast('Upozornenia zapnuté ✓'); draw(); }) }, [icon('sparkles'), 'Zapnúť upozornenia']));
+    }
+  };
+  draw();
+  return card;
+}
+
+// ---------------------------------------------------------------------------
+// Správy k outfitu (admin ↔ osoba)
+// ---------------------------------------------------------------------------
+// who: kto sa pozerá ('admin' | 'user') – jeho správy sú vpravo
+function commentsCard(comments, { send, reload, who, allowCharge = false, title = 'Správy k outfitu', hint }) {
+  const text = h('textarea', { rows: 2, maxLength: 1000, placeholder: who === 'admin' ? 'Napíš správu…' : 'Napíš adminovi – napr. „môžem si dať iné topánky?“' });
+  const list = comments.length ? h('div.thread', {}, comments.map((c) => h('div.msg' + (c.author === who ? '.mine' : ''), {}, [
+    h('div.bubble', {}, c.text),
+    h('div.meta', {}, `${c.author === 'admin' ? 'Admin' : 'Osoba'} · ${fmtDateTime(c.created_at)}`),
+  ]))) : h('p.small.muted', {}, hint || 'Zatiaľ žiadne správy.');
+  const charge = h('input', { type: 'number', min: 1, value: 1, style: { width: '72px' } });
+  const go = (withCharge) => guarded(async () => {
+    if (!withCharge && !text.value.trim()) throw new Error('Napíš správu.');
+    await send(text.value, withCharge ? Number(charge.value) : 0);
+    toast(withCharge ? 'Výnimka povolená ✓' : 'Odoslané');
+    reload();
+  });
+  return h('div.card', {}, [
+    h('h2', {}, title),
+    list,
+    h('div.stack', { style: { marginTop: '12px' } }, [
+      text,
+      h('div.row', { style: { gap: '6px' } }, [
+        h('button.btn.primary', { onclick: go(false) }, 'Odoslať'),
+        allowCharge ? h('span.small.muted', { style: { marginLeft: 'auto' } }, 'alebo') : null,
+        allowCharge ? h('button.btn', { onclick: go(true), title: 'Osoba smie outfit zmeniť, strhne sa jej zadaný počet tokenov' }, 'Povoliť výnimku za') : null,
+        allowCharge ? charge : null,
+        allowCharge ? h('span.small.muted', {}, 'tok.') : null,
+      ]),
+    ]),
+  ]);
+}
+
+// ---------------------------------------------------------------------------
+// Odstránenie pozadia z fotky oblečenia (priamo v prehliadači, bez servera)
+// Funguje na jednoduchom pozadí: farba pozadia sa odhadne z okrajov fotky a
+// od okrajov sa „vyleje“ všetko, čo sa jej podobá. Výsledok sa oreže a okraje zjemnia.
+// tolerance: 10 (jemné) – 80 (agresívne)
+// ---------------------------------------------------------------------------
+async function removeBackground(file, tolerance = 36) {
+  const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' });
+  const scale = Math.min(1, 1400 / Math.max(bmp.width, bmp.height));
+  const W = Math.round(bmp.width * scale);
+  const H = Math.round(bmp.height * scale);
+  const canvas = document.createElement('canvas');
+  canvas.width = W; canvas.height = H;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(bmp, 0, 0, W, H);
+  const img = ctx.getImageData(0, 0, W, H);
+  const px = img.data;
+
+  // Farba pozadia = medián pixelov na okraji
+  const border = [];
+  for (let x = 0; x < W; x++) border.push(x, (H - 1) * W + x);
+  for (let y = 0; y < H; y++) border.push(y * W, y * W + W - 1);
+  const med = [0, 1, 2].map((c) => { const v = border.map((i) => px[i * 4 + c]).sort((a, b) => a - b); return v[v.length >> 1]; });
+  // Vzdialenosť od farby pozadia: rozdiel jasu a farebného odtieňa zvlášť. Tmavší odtieň
+  // tej istej farby (tieň pod oblečením) sa počíta ako bližší – tiene tak zmiznú s pozadím.
+  const bgL = (med[0] + med[1] + med[2]) / 3;
+  const dist = (i) => {
+    const r = px[i * 4]; const g = px[i * 4 + 1]; const b = px[i * 4 + 2];
+    const dl = (r + g + b) / 3 - bgL;
+    const chroma = Math.hypot(r - med[0] - dl, g - med[1] - dl, b - med[2] - dl);
+    return Math.hypot(chroma * 1.2, dl < 0 ? dl * 0.5 : dl);
+  };
+
+  // Vylievanie od okrajov (BFS) – odstráni len pozadie spojené s okrajom, nie svetlé miesta vo vnútri kúsku
+  const removed = new Uint8Array(W * H);
+  const queue = new Int32Array(W * H);
+  let head = 0; let tail = 0;
+  for (const i of border) if (!removed[i] && dist(i) < tolerance) { removed[i] = 1; queue[tail++] = i; }
+  while (head < tail) {
+    const i = queue[head++];
+    const x = i % W; const y = (i / W) | 0;
+    const nb = [x > 0 ? i - 1 : -1, x < W - 1 ? i + 1 : -1, y > 0 ? i - W : -1, y < H - 1 ? i + W : -1];
+    for (const n of nb) if (n >= 0 && !removed[n] && dist(n) < tolerance) { removed[n] = 1; queue[tail++] = n; }
+  }
+  const kept = W * H - tail;
+  if (kept < W * H * 0.02) throw new Error('Pozadie sa nepodarilo oddeliť – skús slabšie nastavenie alebo fotku na jednoduchšom pozadí.');
+
+  // Mäkké okraje: priehľadnosť podľa podielu zachovaných susedov (3×3)
+  let minX = W; let minY = H; let maxX = 0; let maxY = 0;
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const i = y * W + x;
+      if (removed[i]) { px[i * 4 + 3] = 0; continue; }
+      let k = 0; let n = 0;
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+        const xx = x + dx; const yy = y + dy;
+        if (xx < 0 || yy < 0 || xx >= W || yy >= H) continue;
+        n++; if (!removed[yy * W + xx]) k++;
+      }
+      px[i * 4 + 3] = Math.round(255 * Math.min(1, (k / n) * 1.15));
+      if (x < minX) minX = x; if (x > maxX) maxX = x;
+      if (y < minY) minY = y; if (y > maxY) maxY = y;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+
+  // Orezanie na kúsok s malým okrajom
+  const padX = Math.round((maxX - minX) * 0.03); const padY = Math.round((maxY - minY) * 0.03);
+  const cx = Math.max(0, minX - padX); const cy = Math.max(0, minY - padY);
+  const cw = Math.min(W, maxX + padX + 1) - cx; const ch = Math.min(H, maxY + padY + 1) - cy;
+  const out = document.createElement('canvas');
+  out.width = cw; out.height = ch;
+  out.getContext('2d').drawImage(canvas, cx, cy, cw, ch, 0, 0, cw, ch);
+  // WebP s priehľadnosťou (menší súbor), Safari vráti PNG
+  let blob = await new Promise((r) => out.toBlob(r, 'image/webp', 0.9));
+  if (!blob || blob.type !== 'image/webp') blob = await new Promise((r) => out.toBlob(r, 'image/png'));
+  const ext = blob.type === 'image/webp' ? 'webp' : 'png';
+  return new File([blob], `${(file.name || 'kusok').replace(/\.[^.]+$/, '')}-bez-pozadia.${ext}`, { type: blob.type });
+}
+
+// Tlačidlá na odstránenie pozadia s voľbou sily; onDone(file) dostane výsledok
+function bgRemoveControls(getFile, onDone) {
+  let original = null;
+  const strength = { Jemne: 22, Normálne: 36, Silno: 60 };
+  let level = 'Normálne';
+  const levels = h('div.segmented', { style: { margin: 0 } });
+  const drawLevels = () => levels.replaceChildren(...Object.keys(strength).map((k) => h('button.chip' + (k === level ? '.active' : ''), {
+    type: 'button', onclick: () => { level = k; drawLevels(); if (original) run(); },
+  }, k)));
+  const btn = h('button.btn', { type: 'button' }, [icon('sparkles'), 'Odstrániť pozadie']);
+  const run = guarded(async () => {
+    const src = original || (await getFile()); // getFile môže byť aj async (stiahnutie existujúcej fotky)
+    if (!src) throw new Error('Najprv odfoť alebo vyber fotku.');
+    original = src;
+    btn.classList.add('busy');
+    try { onDone(await removeBackground(src, strength[level])); } finally { btn.classList.remove('busy'); }
+    levels.classList.remove('hidden');
+  });
+  btn.addEventListener('click', run);
+  drawLevels();
+  levels.classList.add('hidden');
+  const el = h('div.stack', {}, [h('div.row', { style: { gap: '8px' } }, [btn, levels]),
+    h('div.bg-note', {}, 'Najlepšie funguje na jednoduchom svetlom pozadí. Keď sa odstráni aj kus oblečenia, daj „Jemne“.')]);
+  return { el, reset: () => { original = null; levels.classList.add('hidden'); } };
 }

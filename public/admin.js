@@ -2,6 +2,8 @@
 
 // Rozhranie admina: prehľad ľudí, výber outfitov (drag & drop na postavu), pozvánky, úlohy, nastavenia.
 const state = { tab: 'people', userId: null, date: null, seq: 0 };
+// Odkaz z notifikácie môže otvoriť rovno konkrétnu záložku (napr. /admin#tasks).
+if (['tasks', 'invites', 'settings'].includes(location.hash.slice(1))) state.tab = location.hash.slice(1);
 
 function render() {
   $$('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === state.tab));
@@ -27,7 +29,7 @@ function setPendingBadge(n) {
 // Prehľad ľudí
 // ---------------------------------------------------------------------------
 async function renderPeople(view) {
-  const { cycle, users, pending_tasks: pending } = await api('GET', '/api/admin/overview');
+  const { cycle, users, pending_tasks: pending, proofs } = await api('GET', '/api/admin/overview');
   const { storage } = await whoami();
   // Bez úložiska na Verceli sa nedajú nahrávať fotky – admin to musí vidieť hneď.
   if (storage === 'none') view.append(h('div.notice.danger', { style: { marginBottom: '16px' } }, [
@@ -52,6 +54,12 @@ async function renderPeople(view) {
       stat(pending, 'videí na vyhodnotenie', () => { state.tab = 'tasks'; render(); }),
     ]),
   );
+  if (proofs.length) {
+    view.append(h('div.card', { style: { marginTop: '16px' } }, [
+      h('div.section-head', {}, [h('h2', {}, `Fotky v outfite na kontrolu (${proofs.length})`)]),
+      h('div.proof-grid', {}, proofs.map((p) => proofReview(p, p.user_id, p.user_name, () => render()))),
+    ]));
+  }
   if (!users.length) {
     view.append(h('div.card', { style: { textAlign: 'center', padding: '40px 20px', marginTop: '16px' } }, [
       h('h2', {}, 'Zatiaľ tu nikto nie je'),
@@ -77,8 +85,13 @@ async function renderPeople(view) {
 // Detail osoby + editor outfitu
 // ---------------------------------------------------------------------------
 async function renderPerson(view) {
-  const data = await api('GET', `/api/admin/users/${state.userId}`);
+  const [data, templates, stats] = await Promise.all([
+    api('GET', `/api/admin/users/${state.userId}`),
+    api('GET', `/api/admin/users/${state.userId}/templates`),
+    api('GET', `/api/admin/users/${state.userId}/stats`),
+  ]);
   const { user, cycle, items, days, transactions } = data;
+  const comments = await api('GET', `/api/admin/users/${state.userId}/comments/${state.date || cycle.target}`);
   const reload = () => render();
 
   view.append(h('div.row', { style: { marginBottom: '14px' } }, [
@@ -126,19 +139,29 @@ async function renderPerson(view) {
   const day = dayMap.get(date) || null;
   const dateIn = h('input', { type: 'date', value: date, style: { width: 'auto' }, onchange: (e) => { state.date = e.target.value; render(); } });
   view.append(h('div.card', {}, [
-    h('div.section-head', {}, [
-      h('h2', {}, 'Vybrať outfit'),
-      h('div.row', { style: { gap: '6px' } }, [
-        h('button.chip' + (date === cycle.today ? '.active' : ''), { onclick: () => { state.date = cycle.today; render(); } }, 'Dnes'),
-        h('button.chip' + (date === cycle.target ? '.active' : ''), { onclick: () => { state.date = cycle.target; render(); } }, 'Zajtra'),
-        dateIn,
-      ]),
-    ]),
-    h('div.row', { style: { margin: '-4px 0 16px', gap: '8px' } }, [h('span.muted', {}, fmtDate(date)), statusBadge(day, cycle, date === cycle.target),
+    h('div.section-head', {}, [h('h2', {}, 'Vybrať outfit'), dateIn]),
+    weekStrip(cycle, dayMap, date),
+    h('div.row', { style: { margin: '4px 0 16px', gap: '8px' } }, [h('span.muted', {}, fmtDate(date)), statusBadge(day, cycle, date === cycle.target),
       day?.offer?.length ? h('span.small.muted', {}, `Ponúknutých kúskov: ${day.offer.length}`) : null]),
     day?.status === 'self' && !day.outfit ? h('div.notice.warn', { style: { marginBottom: '12px' } }, 'Osoba zvolila, že si tento deň vyberie sama. Môžeš jej outfit aj tak vybrať.') : null,
-    items.some((i) => !i.archived) ? outfitEditor(user, items, day, date, reload) : h('p.muted', {}, 'Osoba zatiaľ nenahrala žiadne oblečenie.'),
+    items.some((i) => !i.archived) ? outfitEditor(user, items, day, date, reload, templates) : h('p.muted', {}, 'Osoba zatiaľ nenahrala žiadne oblečenie.'),
   ]));
+
+  // Fotka v outfite a správy k vybranému dňu
+  view.append(h('div.grid.cols-2', { style: { marginTop: '16px' } }, [
+    h('div.card', {}, [
+      h('h2', {}, 'Fotka v outfite'),
+      day?.proof_photo ? proofReview(day, user.id, null, reload)
+        : h('p.muted.small', {}, day?.outfit ? 'Osoba sa na tento deň ešte neodfotila.' : 'Na tento deň nie je vybraný outfit.'),
+    ]),
+    commentsCard(comments, {
+      send: (text, charge) => api('POST', `/api/admin/users/${user.id}/comments/${date}`, { text, charge }),
+      reload, who: 'admin', allowCharge: true,
+    }),
+  ]));
+
+  // Štatistiky
+  view.append(statsCard(stats));
 
   // Šatník
   const active = items.filter((i) => !i.archived);
@@ -158,6 +181,72 @@ async function renderPerson(view) {
       h('b', { style: { color: t.amount > 0 ? 'var(--ok)' : 'var(--danger)' } }, (t.amount > 0 ? '+' : '') + t.amount),
     ]))) : h('p.muted', {}, 'Zatiaľ nič.')]),
   ]));
+}
+
+// Pás 14 dní (3 dozadu, 10 dopredu) so stavom každého dňa
+function weekStrip(cycle, dayMap, selected) {
+  const base = new Date(`${cycle.today}T12:00:00`);
+  const pad = (n) => String(n).padStart(2, '0');
+  const strip = h('div.week');
+  for (let i = -3; i <= 10; i++) {
+    const d = new Date(base); d.setDate(d.getDate() + i);
+    const iso = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    const day = dayMap.get(iso);
+    const dot = day?.outfit ? 'outfit' : day?.status === 'self' ? 'self' : day ? 'offer' : 'none';
+    strip.append(h('button.wday' + (iso === selected ? '.active' : '') + (iso === cycle.today ? '.today' : ''), {
+      type: 'button', onclick: () => { state.date = iso; render(); },
+      title: day?.outfit ? 'Outfit vybraný' : day?.status === 'self' ? 'Vyberá si sama' : day ? 'Ponuka odoslaná' : 'Nič',
+    }, [h('span', {}, d.toLocaleDateString('sk-SK', { weekday: 'short' })), h('b', {}, d.getDate()), h('i.dot.' + dot)]));
+  }
+  requestAnimationFrame(() => strip.querySelector('.active')?.scrollIntoView({ inline: 'center', block: 'nearest' }));
+  return strip;
+}
+
+// Kontrola fotky v outfite: schváliť, alebo zamietnuť (s možnou stratou tokenov)
+function proofReview(day, userId, userName, done) {
+  const penalty = h('input', { type: 'number', min: 0, value: 1, style: { width: '80px' } });
+  const note = h('input', { type: 'text', placeholder: 'Komentár (nepovinné)', maxLength: 500 });
+  const decide = (decision) => guarded(async () => {
+    await api('POST', `/api/admin/users/${userId}/proof/${day.date}`, { decision, penalty: decision === 'rejected' ? penalty.value : 0, note: note.value });
+    toast(decision === 'approved' ? 'Schválené ✓' : 'Zamietnuté');
+    done();
+  });
+  const status = { pending: ['Čaká na kontrolu', 'warn'], approved: ['Schválené', 'ok'], rejected: ['Zamietnuté', 'danger'] }[day.proof_status] || ['', ''];
+  return h('div.proof', {}, [
+    h('a', { href: day.proof_photo, target: '_blank' }, h('img', { src: day.proof_photo, alt: 'Fotka v outfite', loading: 'lazy' })),
+    h('div', { style: { minWidth: 0, flex: 1 } }, [
+      userName ? h('b', { style: { cursor: 'pointer' }, onclick: () => { state.userId = userId; state.date = day.date; render(); scrollTo(0, 0); } }, `${userName} ›`) : null,
+      h('div.small.muted', {}, `${fmtDate(day.date)} · ${fmtDateTime(day.proof_at)}`),
+      h('span.badge.' + status[1], { style: { margin: '6px 0' } }, status[0]),
+      day.proof_note ? h('div.small', {}, ['💬 ', day.proof_note]) : null,
+      day.proof_status === 'pending' ? h('div.stack', { style: { marginTop: '8px' } }, [
+        note,
+        h('div.row', { style: { gap: '6px' } }, [
+          h('button.btn.ok.small', { onclick: decide('approved') }, '✓ Sedí'),
+          h('button.btn.danger.small', { onclick: decide('rejected') }, '✗ Nesedí'),
+          h('span.small.muted', {}, 'strhnúť'), penalty, h('span.small.muted', {}, 'tok.'),
+        ]),
+      ]) : null,
+    ]),
+  ]);
+}
+
+function statsCard(st) {
+  const box = (v, l) => h('div.stat', {}, [h('b', {}, v), h('span', {}, l)]);
+  const mini = (list, extra) => list.length ? h('div.mini-items', {}, list.map((i) => h('div.mini', { title: i.name }, [
+    h('img', { src: i.photo, alt: i.name, loading: 'lazy' }), h('span', {}, extra ? extra(i) : i.name)]))) : h('p.small.muted', {}, 'Nič.');
+  return h('div.card', {}, [
+    h('h2', {}, 'Štatistiky'),
+    h('div.stat-row', {}, [
+      box(st.outfits, 'odovzdaných outfitov'), box(st.on_time, 'ponúk načas'), box(st.late, 'neskoro za token'),
+      box(st.self, 'vybrala si sama'), box(`${st.proofs_ok}/${st.proofs_ok + st.proofs_bad}`, 'fotiek schválených'),
+      box(st.tasks_done, 'splnených úloh'), box(`+${st.tokens_earned} / −${st.tokens_spent}`, 'tokeny získané / minuté'),
+    ]),
+    h('div.grid.cols-2', { style: { marginTop: '16px' } }, [
+      h('div', {}, [h('h3', {}, 'Najčastejšie vyberané'), mini(st.top, (i) => `${i.count}× ${i.name}`)]),
+      h('div', {}, [h('h3', {}, `Ešte nikdy nemala na sebe (${st.never.length})`), mini(st.never.slice(0, 12))]),
+    ]),
+  ]);
 }
 
 function tokenDialog(user, done) {
@@ -194,7 +283,7 @@ function defaultW(item) {
   return 45;
 }
 
-function outfitEditor(user, items, day, date, reload) {
+function outfitEditor(user, items, day, date, reload, templates = []) {
   const byId = new Map(items.map((i) => [i.id, i]));
   const offer = new Set(day?.offer || []);
   const ed = {
@@ -411,9 +500,44 @@ function outfitEditor(user, items, day, date, reload) {
     reload();
   });
 
+  // Šablóny: načítanie uloženej kombinácie a uloženie aktuálnej
+  const tplSelect = h('select', {
+    style: { width: 'auto', flex: 1, minWidth: '140px' },
+    onchange: (e) => {
+      const t = templates.find((x) => x.id === Number(e.target.value));
+      e.target.value = '';
+      if (!t) return;
+      ed.items = new Set(t.outfit.items.filter((id) => byId.has(id)));
+      ed.front = structuredClone(t.outfit.front || []);
+      ed.back = structuredClone(t.outfit.back || []);
+      if (t.outfit.note) note.value = t.outfit.note;
+      ed.sel = null;
+      drawAll();
+      toast(`Šablóna „${t.name}“ načítaná – nezabudni potvrdiť`);
+    },
+  }, [h('option', { value: '' }, templates.length ? `Šablóny (${templates.length})…` : 'Žiadne šablóny'),
+    ...templates.map((t) => h('option', { value: t.id }, t.name))]);
+  const saveTpl = guarded(async () => {
+    if (!ed.items.size) throw new Error('Najprv vyber oblečenie.');
+    const name = prompt('Názov šablóny (napr. „Do školy“):');
+    if (!name) return;
+    await api('POST', `/api/admin/users/${user.id}/templates`, { name, items: [...ed.items], front: ed.front, back: ed.back, note: note.value });
+    toast('Šablóna uložená ✓');
+    reload();
+  });
+  const manageTpl = () => openSheet('Šablóny', templates.length ? h('div.list', {}, templates.map((t) => h('div.row.between', {}, [
+    h('div', {}, [h('b', {}, t.name), h('div.small.muted', {}, `${t.outfit.items.length} kúskov · ${fmtDateTime(t.created_at)}`)]),
+    h('button.btn.small.danger', { onclick: guarded(async () => { await api('DELETE', `/api/admin/templates/${t.id}`); closeSheet(); toast('Zmazané'); reload(); }) }, 'Zmazať'),
+  ]))) : h('p.muted', {}, 'Zatiaľ žiadne šablóny.'));
+
   return h('div.editor', {}, [
     h('div.stage-wrap', {}, [sideChips, stage, tools]),
     h('div.editor-side', {}, [
+      h('div.row', { style: { marginBottom: '14px', gap: '6px' } }, [
+        tplSelect,
+        h('button.btn.small', { onclick: saveTpl, title: 'Uložiť aktuálny outfit ako šablónu' }, '+ Šablóna'),
+        templates.length ? h('button.btn.small.ghost', { onclick: manageTpl }, 'Spravovať') : null,
+      ]),
       h('h3', {}, 'Oblečenie'),
       h('p.small.muted', {}, 'Ťukni na kúsok alebo ho potiahni na postavu. Druhým ťuknutím ho z outfitu odstrániš.'),
       palette,
@@ -470,7 +594,8 @@ async function renderInvites(view) {
 const SUB_STATUS = { pending: ['Čaká', 'warn'], approved: ['Splnené', 'ok'], exception: ['Výnimka', 'accent'], rejected: ['Nesplnené', 'danger'] };
 
 async function renderTasks(view) {
-  const { tasks, submissions } = await api('GET', '/api/admin/tasks');
+  const { tasks, submissions, users } = await api('GET', '/api/admin/tasks');
+  taskUsers = users;
   const pending = submissions.filter((s) => s.status === 'pending');
   setPendingBadge(pending.length);
 
@@ -503,18 +628,24 @@ async function renderTasks(view) {
   const title = h('input', { type: 'text', maxLength: 120, required: true, placeholder: 'napr. 30 drepov' });
   const desc = h('textarea', { maxLength: 2000, placeholder: 'Presné zadanie – čo musí byť na videu vidieť' });
   const reward = h('input', { type: 'number', min: 0, value: 1 });
+  const repeat = repeatSelect('unlimited');
+  const who = assigneePicker([]);
   view.append(h('div.card', {}, [
     h('h2', {}, 'Nová úloha'),
     h('form', {
       onsubmit: guarded(async (ev) => {
         ev.preventDefault();
-        await api('POST', '/api/admin/tasks', { title: title.value, description: desc.value, reward: reward.value });
+        await api('POST', '/api/admin/tasks', { title: title.value, description: desc.value, reward: reward.value, repeat: repeat.value, assignees: who.value() });
         toast('Úloha pridaná'); render();
       }),
     }, [
       h('label.field', {}, [h('span', {}, 'Názov'), title]),
       h('label.field', {}, [h('span', {}, 'Popis'), desc]),
-      h('label.field', {}, [h('span', {}, 'Odmena (tokeny)'), reward]),
+      h('div.grid.cols-2', {}, [
+        h('label.field', {}, [h('span', {}, 'Odmena (tokeny)'), reward]),
+        h('label.field', {}, [h('span', {}, 'Ako často'), repeat]),
+      ]),
+      h('div.field', {}, [h('span', { style: { display: 'block', fontWeight: 600, fontSize: '.82rem', marginBottom: '8px' } }, 'Pre koho'), who.el]),
       h('button.btn.primary', {}, 'Pridať úlohu'),
     ]),
   ]));
@@ -522,7 +653,10 @@ async function renderTasks(view) {
   // Zoznam úloh
   view.append(h('div.card', {}, [h('h2', {}, 'Úlohy'), tasks.length ? h('div.list', {}, tasks.map((t) => h('div', {}, [
     h('div.row.between', {}, [
-      h('div', {}, [h('b', { style: { opacity: t.active ? 1 : 0.5 } }, t.title), ' ', h('span.badge.accent', {}, `+${t.reward}`), t.active ? null : h('span.badge', { style: { marginLeft: '4px' } }, 'skrytá')]),
+      h('div', {}, [h('b', { style: { opacity: t.active ? 1 : 0.5 } }, t.title), ' ', h('span.badge.accent', {}, `+${t.reward}`),
+        ' ', h('span.badge', {}, REPEAT[t.repeat] || REPEAT.unlimited),
+        ' ', h('span.badge', {}, t.assignees.length ? t.assignees.map((id) => taskUsers.find((u) => u.id === id)?.name || '?').join(', ') : 'všetci'),
+        t.active ? null : h('span.badge', { style: { marginLeft: '4px' } }, 'skrytá')]),
       h('div.row', {}, [
         h('button.btn.small', { onclick: () => editTask(t) }, 'Upraviť'),
         h('button.btn.small', { onclick: guarded(async () => { await api('PATCH', `/api/admin/tasks/${t.id}`, { active: !t.active }); render(); }) }, t.active ? 'Skryť' : 'Zobraziť'),
@@ -545,23 +679,42 @@ async function renderTasks(view) {
 }
 
 function editTask(t) {
-  const dlg = $('#dlg');
   const title = h('input', { type: 'text', value: t.title, maxLength: 120 });
   const desc = h('textarea', { maxLength: 2000 }, t.description);
   const reward = h('input', { type: 'number', min: 0, value: t.reward });
-  dlg.replaceChildren(h('div.card', {}, [
-    h('h2', {}, 'Upraviť úlohu'),
+  const repeat = repeatSelect(t.repeat);
+  const who = assigneePicker(t.assignees);
+  openSheet('Upraviť úlohu', [
     h('label.field', {}, [h('span', {}, 'Názov'), title]),
     h('label.field', {}, [h('span', {}, 'Popis'), desc]),
-    h('label.field', {}, [h('span', {}, 'Odmena'), reward]),
-    h('div.row', {}, [h('button.btn', { onclick: () => dlg.close() }, 'Zavrieť'), h('button.btn.primary', {
+    h('div.grid.cols-2', {}, [h('label.field', {}, [h('span', {}, 'Odmena'), reward]), h('label.field', {}, [h('span', {}, 'Ako často'), repeat])]),
+    h('div.field', {}, [h('span', { style: { display: 'block', fontWeight: 600, fontSize: '.82rem', marginBottom: '8px' } }, 'Pre koho'), who.el]),
+    h('button.btn.primary.block', {
       onclick: guarded(async () => {
-        await api('PATCH', `/api/admin/tasks/${t.id}`, { title: title.value, description: desc.value, reward: reward.value });
-        dlg.close(); render();
+        await api('PATCH', `/api/admin/tasks/${t.id}`, { title: title.value, description: desc.value, reward: reward.value, repeat: repeat.value, assignees: who.value() });
+        closeSheet(); toast('Uložené'); render();
       }),
-    }, 'Uložiť')]),
-  ]));
-  dlg.showModal();
+    }, 'Uložiť'),
+  ]);
+}
+
+let taskUsers = [];
+const REPEAT = { unlimited: 'koľkokrát chce', once: 'len raz', weekly: 'raz týždenne' };
+function repeatSelect(value) {
+  return h('select', {}, Object.entries(REPEAT).map(([v, l]) => h('option', { value: v, selected: v === value }, l)));
+}
+// Výber osôb; prázdny výber = úloha pre všetkých
+function assigneePicker(selected) {
+  const sel = new Set(selected);
+  const wrap = h('div.cat-pick');
+  const draw = () => wrap.replaceChildren(
+    h('button.chip' + (sel.size ? '' : '.active'), { type: 'button', onclick: () => { sel.clear(); draw(); } }, 'Všetci'),
+    ...taskUsers.map((u) => h('button.chip' + (sel.has(u.id) ? '.active' : ''), {
+      type: 'button', onclick: () => { sel.has(u.id) ? sel.delete(u.id) : sel.add(u.id); draw(); },
+    }, u.name)),
+  );
+  draw();
+  return { el: wrap, value: () => [...sel] };
 }
 
 // ---------------------------------------------------------------------------
@@ -616,6 +769,12 @@ async function renderSettings(view) {
         }),
       }, '×'),
     ]))),
+  ]));
+  view.append(pushCard('admin', 'Upozornenie ti príde, keď niekto pošle ponuku, video z úlohy, fotku v outfite alebo správu.'));
+  view.append(h('div.card', {}, [
+    h('h2', {}, 'Záloha'),
+    h('p.small.muted', {}, 'Stiahni si všetky dáta (ľudia, šatníky, outfity, tokeny, úlohy, správy) do jedného súboru. Fotky a videá ostávajú v úložisku, v zálohe sú na ne odkazy.'),
+    h('a.btn', { href: '/api/admin/export', download: '' }, 'Stiahnuť zálohu (.json)'),
   ]));
   if (diag) {
     const ok = diag.storage === 'local' || diag.blob?.ok;

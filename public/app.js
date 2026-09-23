@@ -19,7 +19,7 @@ function render() {
   const view = h('main', { id: 'view' });
   // Voliteľné sekcie (null/false) sa jednoducho vynechajú, nie vypíšu ako text.
   view.append = (...nodes) => Element.prototype.append.apply(view, nodes.filter((n) => n != null && n !== false));
-  const renderer = { outfit: renderOutfit, wardrobe: renderWardrobe, tasks: renderTasks, tokens: renderTokens }[state.tab];
+  const renderer = { outfit: renderOutfit, wardrobe: renderWardrobe, history: renderHistory, tasks: renderTasks, tokens: renderTokens }[state.tab];
   const seq = ++state.seq;
   const done = startProgress();
   Promise.resolve(renderer(view)).then(() => {
@@ -65,6 +65,72 @@ function outfitView(day, user, items, title) {
   ]);
 }
 
+// „Mám to na sebe“ – odfotenie sa v dnešnom outfite
+function proofCard(day) {
+  const st = day.proof_status;
+  const info = { pending: ['Čaká na kontrolu admina', 'warn'], approved: ['Schválené ✓', 'ok'], rejected: ['Neschválené', 'danger'] }[st];
+  const upload = () => {
+    const picker = photoPicker({ hint: 'Odfoť sa celá/ý v dnešnom outfite (napr. v zrkadle)', captureMode: 'user' });
+    const status = h('div');
+    openSheet('Fotka v outfite', [
+      picker.el, status,
+      h('button.btn.primary.block', {
+        style: { marginTop: '14px' },
+        onclick: guarded(async () => {
+          if (!picker.file()) throw new Error('Najprv sa odfoť.');
+          const prog = uploadProgress('Nahrávam fotku');
+          status.replaceChildren(prog.el);
+          try {
+            const photo = await uploadFile(await resizeImage(picker.file()), 'image', { onProgress: prog.set });
+            await api('POST', '/api/me/proof', { photo, date: day.date });
+          } finally { status.replaceChildren(); }
+          closeSheet(); toast('Odoslané adminovi ✓'); await load();
+        }),
+      }, 'Poslať adminovi'),
+    ]);
+  };
+  return h('div.card', {}, [
+    h('div.section-head', {}, [h('div', {}, [h('h2', {}, 'Mám to na sebe'), h('div.small.muted', {}, 'Odfoť sa v outfite, nech admin vidí, že sedí.')]),
+      info ? h('span.badge.' + info[1], {}, info[0]) : null]),
+    day.proof_photo ? h('div.proof', {}, [
+      h('img', { src: day.proof_photo, alt: 'Fotka v outfite' }),
+      h('div', {}, [
+        day.proof_note ? h('div.note-bubble', { style: { marginBottom: '10px' } }, h('div', {}, [h('span.who', {}, 'Admin'), day.proof_note])) : null,
+        st !== 'approved' ? h('button.btn', { onclick: upload }, [icon('camera'), 'Odfotiť znova']) : null,
+      ]),
+    ]) : h('button.btn.primary', { onclick: upload }, [icon('camera'), 'Odfotiť sa v outfite']),
+  ]);
+}
+
+function dayComments(date) {
+  const list = (state.data.comments || []).filter((c) => c.date === date);
+  return commentsCard(list, {
+    who: 'user',
+    title: `Správy k outfitu · ${fmtDate(date)}`,
+    hint: 'Chceš niečo zmeniť alebo sa niečo spýtať? Napíš adminovi.',
+    send: (text) => api('POST', `/api/me/comments/${date}`, { text }),
+    reload: load,
+  });
+}
+
+// Jednorazová ponuka zapnúť upozornenia (kým ich osoba nezapne alebo neodmietne)
+async function pushBanner() {
+  let dismissed = false;
+  try { dismissed = !!localStorage.getItem('push-asked'); } catch { /* bez úložiska */ }
+  if (dismissed) return null;
+  const st = await pushState().catch(() => ({ supported: false }));
+  if (!st.supported || st.permission !== 'default') return null;
+  const card = h('div.card', { style: { display: 'flex', gap: '14px', alignItems: 'center', flexWrap: 'wrap', marginBottom: '16px' } }, [
+    h('div.empty-icon', { style: { margin: 0, width: '44px', height: '44px' } }, icon('sparkles')),
+    h('div', { style: { flex: 1, minWidth: '180px' } }, [h('b', {}, 'Zapni si upozornenia'), h('div.small.muted', {}, 'Dáme ti vedieť, keď bude outfit vybraný, a pripomenieme ponuku pred uzávierkou.')]),
+    h('div.row', { style: { gap: '6px' } }, [
+      h('button.btn.primary.small', { onclick: guarded(async () => { await enablePush('user'); toast('Upozornenia zapnuté ✓'); card.remove(); }) }, 'Zapnúť'),
+      h('button.btn.small.ghost', { onclick: () => { try { localStorage.setItem('push-asked', '1'); } catch { /* */ } card.remove(); } }, 'Teraz nie'),
+    ]),
+  ]);
+  return card;
+}
+
 function stepper(stage) {
   const labels = ['Ponuka', 'Admin vyberá', 'Outfit hotový'];
   return h('div.stepper', {}, labels.map((l, i) => h('div.st' + (i < stage ? '.done' : i === stage ? '.now' : ''), {}, l)));
@@ -92,7 +158,7 @@ function deadlineBox(cycle, kind) {
   return box;
 }
 
-function renderOutfit(view) {
+async function renderOutfit(view) {
   const { user, cycle, today, tomorrow, items, late_cost: lateCost } = state.data;
   const active = items.filter((i) => !i.archived);
   clearInterval(state.timer);
@@ -100,12 +166,15 @@ function renderOutfit(view) {
   const hour = new Date().getHours();
   const greet = hour < 10 ? 'Dobré ráno' : hour < 18 ? 'Ahoj' : 'Dobrý večer';
   view.append(h('div.hello', {}, [h('div', {}, [h('div.eyebrow', {}, fmtDate(cycle.today)), h('h1', {}, `${greet}, ${user.name}`)])]));
+  view.append(await pushBanner());
 
   // Dnešný outfit má prednosť – to je to, čo osoba práve potrebuje vidieť.
-  if (today?.outfit) view.append(outfitView(today, user, items, 'Dnes máš na sebe'));
+  if (today?.outfit) {
+    view.append(outfitView(today, user, items, 'Dnes máš na sebe'), proofCard(today), dayComments(today.date));
+  }
 
   if (tomorrow?.outfit) {
-    view.append(outfitView(tomorrow, user, items, 'Zajtra si oblečieš'));
+    view.append(outfitView(tomorrow, user, items, 'Zajtra si oblečieš'), dayComments(tomorrow.date));
     return;
   }
 
@@ -143,14 +212,17 @@ function renderOutfit(view) {
 
   if (lateNoOffer) card.append(lateChoices(user, lateCost, true, isSelf));
 
-  // Výber kúskov do ponuky
-  const shown = filterByCategory(active, state.offerCat);
-  const counts = countByCategory(active);
+  // Výber kúskov do ponuky – kúsky v prádle / požičané sa ponúknuť nedajú
+  const unavailable = active.filter((i) => i.status && i.status !== 'ok');
+  const offerable = active.filter((i) => !i.status || i.status === 'ok');
+  for (const i of unavailable) state.offer.delete(i.id);
+  const shown = filterByCategory(offerable, state.offerCat);
+  const counts = countByCategory(offerable);
   card.append(
     h('div.section-head', { style: { marginTop: '20px' } }, [
       h('div', {}, [h('h3', { style: { margin: 0 } }, 'Z čoho sa má vyberať?'), h('div.small.muted', {}, 'Označ čisté kúsky, ktoré máš zajtra k dispozícii.')]),
       h('div.row', { style: { gap: '6px' } }, [
-        h('button.btn.small', { onclick: () => { active.forEach((i) => state.offer.add(i.id)); state.offerDirty = true; render(); } }, 'Všetko'),
+        h('button.btn.small', { onclick: () => { offerable.forEach((i) => state.offer.add(i.id)); state.offerDirty = true; render(); } }, 'Všetko'),
         h('button.btn.small.ghost', { onclick: () => { state.offer.clear(); state.offerDirty = true; render(); } }, 'Nič'),
       ]),
     ]),
@@ -165,6 +237,8 @@ function renderOutfit(view) {
         updateBar();
       },
     }))),
+    unavailable.length ? h('p.small.muted', { style: { marginTop: '10px' } },
+      `${unavailable.length} ${unavailable.length === 1 ? 'kúsok je' : 'kúsky sú'} v prádle alebo požičané – v šatníku ich vieš vrátiť medzi dostupné.`) : null,
   );
 
   // Plávajúca lišta s počtom a odoslaním
@@ -285,7 +359,9 @@ async function renderWardrobe(view) {
 
 async function addItemSheet() {
   await ensureCategories();
-  const picker = photoPicker({ hint: 'Odfoť kúsok rozložený na svetlom pozadí' });
+  let bg;
+  const picker = photoPicker({ hint: 'Odfoť kúsok rozložený na svetlom pozadí', onChange: () => bg?.reset() });
+  bg = bgRemoveControls(() => picker.file(), (f) => picker.set(f));
   const nameIn = h('input', { type: 'text', maxLength: 80, placeholder: 'napr. Biele tričko Nike' });
   const cats = categoryPicker();
   const status = h('div');
@@ -302,11 +378,12 @@ async function addItemSheet() {
     } finally { status.replaceChildren(); }
     toast(`„${nameIn.value.trim()}“ je v šatníku ✓`);
     state.data = await api('GET', '/api/me');
-    if (again) { picker.reset(); nameIn.value = ''; cats.reset(); } else closeSheet();
+    if (again) { picker.reset(); bg.reset(); nameIn.value = ''; cats.reset(); } else closeSheet();
     render();
   });
   openSheet('Pridať oblečenie', [
     picker.el,
+    h('div', { style: { marginTop: '10px' } }, bg.el),
     h('label.field', { style: { marginTop: '16px' } }, [h('span', {}, 'Názov'), nameIn]),
     h('div.field', {}, [fieldLabel('Kategória'), cats.el]),
     status,
@@ -321,21 +398,93 @@ async function editItem(item) {
   await ensureCategories();
   const nameIn = h('input', { type: 'text', value: item.name, maxLength: 80 });
   const cats = categoryPicker(item.category_id);
+  let status = item.status || 'ok';
+  const statusSeg = h('div.segmented.full');
+  const drawStatus = () => statusSeg.replaceChildren(...Object.entries(ITEM_STATUS).map(([k, l]) => h('button.chip' + (k === status ? '.active' : ''), {
+    type: 'button', onclick: () => { status = k; drawStatus(); },
+  }, l)));
+  drawStatus();
+  let newPhoto = null;
+  const imgBox = h('div', { style: { borderRadius: '14px', background: 'var(--tile-bg)', padding: '12px', marginBottom: '12px' } },
+    h('img', { src: item.photo, alt: '', style: { display: 'block', width: '100%', maxHeight: '34vh', objectFit: 'contain' } }));
+  // Pôvodnú fotku stiahneme a spracujeme; nová sa nahrá až pri uložení
+  const bg = bgRemoveControls(async () => {
+    const r = await fetch(item.photo);
+    if (!r.ok) throw new Error('Fotku sa nepodarilo načítať.');
+    return new File([await r.blob()], 'kusok', { type: r.headers.get('content-type') || 'image/jpeg' });
+  }, (f) => {
+    newPhoto = f;
+    imgBox.classList.add('checker');
+    imgBox.replaceChildren(h('img', { src: URL.createObjectURL(f), alt: '', style: { display: 'block', width: '100%', maxHeight: '34vh', objectFit: 'contain' } }));
+  });
+  const status$ = h('div');
   const save = (patch, msg) => guarded(async () => {
-    await api('PATCH', `/api/me/items/${item.id}`, patch());
+    const body = patch();
+    if (newPhoto && !body.archived) {
+      const prog = uploadProgress('Nahrávam fotku');
+      status$.replaceChildren(prog.el);
+      try { body.photo = await uploadFile(newPhoto, 'image', { onProgress: prog.set }); } finally { status$.replaceChildren(); }
+    }
+    await api('PATCH', `/api/me/items/${item.id}`, body);
     closeSheet(); toast(msg); await load();
   });
   openSheet(item.archived ? 'Odložený kúsok' : 'Upraviť kúsok', [
-    h('div', { style: { borderRadius: '14px', background: 'var(--tile-bg)', padding: '12px', marginBottom: '16px' } },
-      h('img', { src: item.photo, alt: '', style: { display: 'block', width: '100%', maxHeight: '38vh', objectFit: 'contain' } })),
+    imgBox,
+    item.archived ? null : h('div', { style: { marginBottom: '16px' } }, bg.el),
     h('label.field', {}, [h('span', {}, 'Názov'), nameIn]),
     h('div.field', {}, [fieldLabel('Kategória'), cats.el]),
+    item.archived ? null : h('div.field', {}, [fieldLabel('Je k dispozícii?'), statusSeg]),
+    status$,
     h('div.row', { style: { marginTop: '8px' } }, [
-      h('button.btn.primary', { style: { flex: 1 }, onclick: save(() => ({ name: nameIn.value, category_id: cats.value() }), 'Uložené ✓') }, 'Uložiť'),
+      h('button.btn.primary', { style: { flex: 1 }, onclick: save(() => ({ name: nameIn.value, category_id: cats.value(), status }), 'Uložené ✓') }, 'Uložiť'),
       h('button.btn' + (item.archived ? '' : '.danger'), { style: { flex: 1 }, onclick: save(() => ({ archived: !item.archived }), item.archived ? 'Vrátené do šatníka' : 'Odložené') },
         item.archived ? 'Vrátiť do šatníka' : 'Už to nemám'),
     ]),
-  ]);
+  ].filter(Boolean));
+}
+
+// ---------------------------------------------------------------------------
+// História outfitov (aj naplánované dopredu)
+// ---------------------------------------------------------------------------
+async function renderHistory(view) {
+  const days = await api('GET', '/api/me/history');
+  const { user, items, cycle } = state.data;
+  const byId = new Map(items.map((i) => [i.id, i]));
+  view.append(h('div.section-head', {}, [h('div', {}, [h('h1', { style: { margin: 0 } }, 'História outfitov'),
+    h('div.small.muted', {}, days.length ? `${days.length} ${days.length === 1 ? 'outfit' : days.length < 5 ? 'outfity' : 'outfitov'}` : '')])]));
+  if (!days.length) {
+    view.append(h('div.card.empty', {}, [h('div.empty-icon', {}, icon('calendar')), h('h2', {}, 'Zatiaľ žiadne outfity'), h('p', {}, 'Keď ti admin vyberie prvý outfit, uvidíš ho tu.')]));
+    return;
+  }
+  const PROOF = { approved: ['✓ sedí', 'ok'], rejected: ['✗ nesedí', 'danger'], pending: ['čaká', 'warn'] };
+  view.append(h('div.hist', {}, days.map((d) => {
+    const future = d.date > cycle.today;
+    const layers = d.outfit.front.length ? d.outfit.front : d.outfit.back;
+    const photo = d.outfit.front.length ? user.front_photo : user.back_photo;
+    return h('div.hist-card' + (future ? '.future' : ''), { onclick: () => historySheet(d) }, [
+      layers.length ? renderStage(photo, layers, byId)
+        : h('div.stage', { style: { aspectRatio: '3/4', display: 'grid', placeItems: 'center' } }, h('span.small.muted', {}, `${d.outfit.items.length} kúskov`)),
+      h('div.hc-meta', {}, [
+        h('b', {}, new Date(`${d.date}T12:00:00`).toLocaleDateString('sk-SK', { day: 'numeric', month: 'numeric', weekday: 'short' })),
+        future ? h('span.badge.accent', {}, 'naplánované') : d.proof_status ? h('span.badge.' + PROOF[d.proof_status][1], {}, PROOF[d.proof_status][0]) : null,
+      ]),
+    ]);
+  })));
+}
+
+function historySheet(d) {
+  const { user, items } = state.data;
+  const byId = new Map(items.map((i) => [i.id, i]));
+  const pieces = d.outfit.items.map((id) => byId.get(id)).filter(Boolean);
+  openSheet(fmtDate(d.date), [
+    d.outfit_note ? h('div.note-bubble', {}, h('div', {}, [h('span.who', {}, 'Poznámka od admina'), d.outfit_note])) : null,
+    h('div.outfit-layout', {}, [
+      d.outfit.front.length ? renderStage(user.front_photo, d.outfit.front, byId) : null,
+      d.proof_photo ? h('div', {}, [h('h3', {}, 'Moja fotka'), h('img', { src: d.proof_photo, alt: '', style: { width: '100%', borderRadius: '14px' } })]) : null,
+    ].filter(Boolean)),
+    h('h3', { style: { marginTop: '16px' } }, 'Kúsky'),
+    h('div.item-grid', {}, pieces.map((i) => itemTile(i))),
+  ].filter(Boolean));
 }
 
 // ---------------------------------------------------------------------------
@@ -354,12 +503,13 @@ async function renderTasks(view) {
     view.append(h('div.card.empty', {}, [h('div.empty-icon', {}, icon('video')), h('h2', {}, 'Zatiaľ žiadne úlohy'), h('p', {}, 'Keď admin pridá úlohu, objaví sa tu.')]));
   } else {
     view.append(h('div.grid.cols-2', {}, tasks.map((t) => {
-      const waiting = submissions.some((s) => s.task_id === t.id && s.status === 'pending');
+      const REP = { once: 'len raz', weekly: 'raz týždenne' };
       return h('div.card.task', {}, [
         h('div.row.between', {}, [h('h3', { style: { margin: 0 } }, t.title), h('span.reward', {}, `+${t.reward} ${tokenWord(t.reward)}`)]),
         t.description ? h('p', {}, t.description) : null,
-        h('div', { style: { marginTop: '4px' } }, waiting
-          ? h('span.badge.warn', {}, 'Video čaká na vyhodnotenie')
+        REP[t.repeat] ? h('div', {}, h('span.badge', {}, REP[t.repeat])) : null,
+        h('div', { style: { marginTop: '4px' } }, !t.available
+          ? h('span.badge.warn', {}, t.reason)
           : h('button.btn.primary', { onclick: () => taskSheet(t) }, [icon('video'), 'Splniť úlohu'])),
       ].filter(Boolean));
     })));
@@ -445,6 +595,7 @@ async function renderTokens(view) {
         h('b', { style: { color: t.amount > 0 ? 'var(--ok)' : 'var(--danger)' } }, (t.amount > 0 ? '+' : '') + t.amount),
       ]))) : h('p.muted', {}, 'Zatiaľ nič.')]),
     ]),
+    pushCard('user', 'Príde ti upozornenie, keď admin vyberie outfit, odpovie na správu alebo vyhodnotí úlohu. A pripomenieme ti ponuku pred uzávierkou.'),
     h('div.card', { style: { marginTop: '16px' } }, [
       h('h2', {}, 'Prístup z iného zariadenia'),
       h('p.small.muted', {}, 'Toto je tvoj osobný odkaz. Otvor ho na inom mobile alebo počítači a si prihlásená/ý. Nikomu ho neposielaj.'),

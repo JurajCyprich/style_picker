@@ -16,7 +16,8 @@
     "@libsql/client": "^0.18.0",
     "@vercel/blob": "^2.8.0",
     "express": "^5.2.1",
-    "multer": "^2.4.0"
+    "multer": "^2.4.0",
+    "web-push": "^3.6.7"
   },
   "devDependencies": {
     "esbuild": "^0.28.2"

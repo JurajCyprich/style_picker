@@ -21,5 +21,15 @@
       "source": "/join/:code",
       "destination": "/join"
     }
+  ],
+  "crons": [
+    {
+      "path": "/api/cron/evening",
+      "schedule": "0 16 * * *"
+    },
+    {
+      "path": "/api/cron/morning",
+      "schedule": "0 6 * * *"
+    }
   ]
 }
