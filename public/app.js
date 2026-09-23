@@ -182,11 +182,10 @@ async function renderWardrobe(view) {
     onsubmit: guarded(async (ev) => {
       ev.preventDefault();
       const f = ev.target;
-      const fd = new FormData();
-      fd.append('photo', await resizeImage(f.photo.files[0]));
-      fd.append('name', f.name.value);
-      fd.append('category_id', f.category_id.value);
-      await api('POST', '/api/me/items', fd);
+      if (!f.name.value.trim()) throw new Error('Pomenuj oblečenie.');
+      if (!f.category_id.value) throw new Error('Vyber kategóriu.');
+      const photo = await uploadFile(await resizeImage(f.photo.files[0]), 'image', { onProgress: progressToast('Nahrávam fotku') });
+      await api('POST', '/api/me/items', { photo, name: f.name.value, category_id: f.category_id.value });
       toast('Pridané do šatníka');
       await load();
     }),
@@ -254,11 +253,8 @@ async function renderTasks(view) {
       h('form', {
         onsubmit: guarded(async (ev) => {
           ev.preventDefault();
-          const fd = new FormData();
-          fd.append('video', fileIn.files[0]);
-          fd.append('note', noteIn.value);
-          toast('Nahrávam video…');
-          await api('POST', `/api/me/tasks/${t.id}/submit`, fd);
+          const video = await uploadFile(fileIn.files[0], 'video', { onProgress: progressToast('Nahrávam video') });
+          await api('POST', `/api/me/tasks/${t.id}/submit`, { video, note: noteIn.value });
           toast('Video odoslané na vyhodnotenie');
           render();
         }),

@@ -22,31 +22,37 @@ Webová appka, v ktorej **admin vyberá, čo si pozvané osoby oblečú**, a to 
   Keď admin vyberie, osoba vidí outfit nasadený na svojej postave.
 - **Tokeny**: každý pondelok +5. Keď sa minú, zarobí si ich v záložke **Úlohy** (nahrá video, na ktorom úlohu robí).
 
-## Spustenie
+## Nasadenie na Vercel
 
-Treba Node.js 22.13 alebo novší (databáza je vstavaný `node:sqlite`, nič ďalšie netreba inštalovať).
+1. Na [vercel.com/new](https://vercel.com/new) importuj repozitár `style_picker`. Nastavenia nechaj tak, ako sú (všetko je v `vercel.json`).
+2. Pred prvým nasadením pridaj v **Environment Variables** premennú `ADMIN_PASSWORD`, teda tvoje admin heslo.
+3. Klikni **Deploy**. Prvé nasadenie ešte nebude fungovať, lebo chýba databáza a úložisko.
+4. V projekte otvor záložku **Storage**:
+   - **Create Database → Turso** (databáza, bezplatný plán stačí) a pripoj ju k projektu.
+     Tým sa nastavia `TURSO_DATABASE_URL` a `TURSO_AUTH_TOKEN`.
+   - **Create → Blob** (fotky a videá) a pripoj ho k projektu. Tým sa nastaví `BLOB_READ_WRITE_TOKEN`.
+5. **Deployments → … → Redeploy**. Hotovo: otvor adresu projektu a prihlás sa heslom.
+
+Fotky a videá nahráva prehliadač priamo do Vercel Blob, takže limit 4,5 MB pre požiadavky na Verceli sa ich netýka
+(fotka max 15 MB, video max 300 MB). Adresy súborov sú náhodné a nedajú sa uhádnuť, ale nie sú chránené heslom.
+
+## Lokálne spustenie
+
+Treba Node.js 20 alebo novší.
 
 ```bash
 npm install
 ADMIN_PASSWORD=mojeheslo npm start      # http://localhost:3000
 ```
 
-Bez `ADMIN_PASSWORD` sa heslo pri prvom štarte vygeneruje a vypíše do konzoly.
+Lokálne sa databáza aj súbory ukladajú do priečinka `data/`. Bez `ADMIN_PASSWORD` sa heslo pri prvom štarte vygeneruje a vypíše do konzoly.
 
 | Premenná | Predvolené | Význam |
 |---|---|---|
-| `PORT` | `3000` | port servera |
-| `DATA_DIR` | `./data` | databáza a nahraté fotky a videá |
-| `ADMIN_PASSWORD` | – | heslo admina |
-| `TZ` | `Europe/Bratislava` | časové pásmo pre deadline |
+| `ADMIN_PASSWORD` | – | heslo admina (na Verceli povinné) |
+| `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN` | lokálny súbor `data/style_picker.db` | databáza (Turso / libSQL) |
+| `BLOB_READ_WRITE_TOKEN` | – (súbory sa ukladajú do `data/uploads`) | Vercel Blob úložisko |
+| `APP_TIMEZONE` | `Europe/Bratislava` | časové pásmo pre deadline |
+| `PORT`, `DATA_DIR` | `3000`, `./data` | len pre lokálne spustenie |
 
-Aby sa ľudia dostali na appku z mobilu, musí bežať na verejnej adrese (napr. VPS, Render, Fly.io, Railway)
-s trvalým diskom pre `DATA_DIR`. Odkazy na fotky sú náhodné a nedajú sa uhádnuť, ale nie sú chránené heslom.
-
-### Nasadenie na Render
-
-[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/JurajCyprich/style_picker/tree/claude/amazing-hawking-e90bmf)
-
-Súbor `render.yaml` nastaví server aj trvalý disk (5 GB) pre databázu, fotky a videá. Pri nasadení Render vypýta `ADMIN_PASSWORD`.
-
-Testy: `npm test`
+Testy: `npm test`. Prehliadačový klient pre Vercel Blob (`public/vendor/`) sa pregeneruje príkazom `npm run build:vendor`.

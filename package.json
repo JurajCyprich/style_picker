@@ -5,14 +5,20 @@
   "description": "Admin vyberá outfity pre ľudí z ich vlastného šatníka – tokeny, deadline, úlohy.",
   "main": "server.js",
   "scripts": {
-    "start": "node --disable-warning=ExperimentalWarning server.js",
-    "test": "node --disable-warning=ExperimentalWarning --test test/*.test.js"
+    "start": "node server.js",
+    "test": "node --test test/*.test.js",
+    "build:vendor": "esbuild scripts/blob-client-entry.js --bundle --minify --format=iife --global-name=VercelBlob --platform=browser --outfile=public/vendor/vercel-blob-client.js"
   },
   "engines": {
-    "node": ">=22.13"
+    "node": ">=20"
   },
   "dependencies": {
+    "@libsql/client": "^0.18.0",
+    "@vercel/blob": "^2.8.0",
     "express": "^5.2.1",
     "multer": "^2.4.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
   }
 }

@@ -7,9 +7,11 @@
 </head>
 <body>
 <main class="narrow" style="padding-top:12vh">
+  <div class="notice danger hidden" id="invalid" style="margin-bottom:16px">Tento osobný odkaz už neplatí. Požiadaj admina o nový.</div>
   <div class="card">
     <h1>Style <span style="color:var(--accent)">Picker</span></h1>
     <p class="muted">Prihlásenie pre admina. Ak si dostal/a pozývací odkaz, otvor ten – alebo svoj osobný odkaz, ktorý si dostal/a po registrácii.</p>
+    <div class="notice warn hidden" id="nopw" style="margin-bottom:12px">Admin heslo ešte nie je nastavené. Pridaj vo Verceli premennú <b>ADMIN_PASSWORD</b> a nasaď znova.</div>
     <form id="f">
       <label class="field"><span>Admin heslo</span><input type="password" name="password" autocomplete="current-password" required autofocus></label>
       <button class="btn primary block">Prihlásiť</button>
@@ -18,6 +20,12 @@
 </main>
 <script src="/common.js"></script>
 <script>
+if (new URLSearchParams(location.search).has('neplatny')) $('#invalid').classList.remove('hidden');
+whoami().then((w) => {
+  if (w.admin) location.replace('/admin');
+  else if (w.user) location.replace('/app');
+  else if (w.admin_password_missing) $('#nopw').classList.remove('hidden');
+}).catch((e) => toast(e.message, true));
 $('#f').addEventListener('submit', guarded(async (ev) => {
   ev.preventDefault();
   await api('POST', '/api/admin/login', { password: ev.target.password.value });

@@ -7,7 +7,11 @@
 </head>
 <body>
 <main class="narrow">
-  <div class="card" id="form-card">
+  <div class="card hidden" id="invalid-card">
+    <h1>Odkaz nie je platný</h1>
+    <p class="muted">Pozvánka už bola použitá, bola zrušená, alebo neexistuje. Požiadaj admina o nový odkaz.</p>
+  </div>
+  <div class="card hidden" id="form-card">
     <h1>Vitaj v Style <span style="color:var(--accent)">Picker</span></h1>
     <p class="muted">Nahraj oblečenie, ktoré máš, a admin ti každý deň vyberie, čo si oblečieš. Na začiatok potrebujeme tvoje meno a dve fotky celej postavy v <b>T-póze</b> – ruky vodorovne do strán, nohy mierne od seba, celé telo v zábere, jednoduché pozadie, tesnejšie oblečenie.</p>
     <form id="f">
@@ -32,15 +36,15 @@
 <script>
 const code = location.pathname.split('/').pop();
 $$('.photo-drop').forEach(bindPhotoPreview);
+api('GET', `/api/invite/${code}`)
+  .then(() => $('#form-card').classList.remove('hidden'))
+  .catch(() => $('#invalid-card').classList.remove('hidden'));
 $('#f').addEventListener('submit', guarded(async (ev) => {
   ev.preventDefault();
   const f = ev.target;
-  const fd = new FormData();
-  fd.append('name', f.name.value);
-  fd.append('front', await resizeImage(f.front.files[0], 2000));
-  fd.append('back', await resizeImage(f.back.files[0], 2000));
-  toast('Nahrávam…');
-  const res = await api('POST', `/api/join/${code}`, fd);
+  const front = await uploadFile(await resizeImage(f.front.files[0], 2000), 'image', { invite: code, onProgress: progressToast('Fotka spredu') });
+  const back = await uploadFile(await resizeImage(f.back.files[0], 2000), 'image', { invite: code, onProgress: progressToast('Fotka zozadu') });
+  const res = await api('POST', `/api/join/${code}`, { name: f.name.value, front, back });
   $('#plink').value = location.origin + res.personal_link;
   $('#form-card').classList.add('hidden');
   $('#done-card').classList.remove('hidden');

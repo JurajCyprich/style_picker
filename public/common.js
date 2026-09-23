@@ -155,3 +155,59 @@ async function logout() {
   await api('POST', '/api/logout');
   location.href = '/';
 }
+
+// ---------------------------------------------------------------------------
+// Nahrávanie súborov: na Verceli priamo do Vercel Blob, lokálne na server.
+// ---------------------------------------------------------------------------
+let whoamiCache;
+const whoami = () => (whoamiCache ||= api('GET', '/api/whoami'));
+
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = src; s.onload = resolve; s.onerror = () => reject(new Error('Nepodarilo sa načítať nahrávanie.'));
+    document.head.append(s);
+  });
+}
+
+// kind: 'image' | 'video'; invite: kód pozvánky (pri registrácii); onProgress(0–100)
+async function uploadFile(file, kind, { invite, onProgress } = {}) {
+  if (!file) throw new Error('Vyber súbor.');
+  const { storage, max_mb: maxMb } = await whoami();
+  if (file.size > maxMb[kind] * 1024 * 1024) throw new Error(`Súbor je príliš veľký (max ${maxMb[kind]} MB).`);
+
+  if (storage === 'blob') {
+    if (!window.VercelBlob) await loadScript('/vendor/vercel-blob-client.js');
+    const safeName = (file.name || 'subor').toLowerCase().replace(/[^a-z0-9.]+/g, '-').slice(-60);
+    const blob = await window.VercelBlob.upload(`${kind}s/${safeName}`, file, {
+      access: 'public',
+      handleUploadUrl: '/api/blob-upload',
+      clientPayload: JSON.stringify({ kind, invite }),
+      contentType: file.type,
+      multipart: file.size > 20 * 1024 * 1024,
+      onUploadProgress: onProgress ? (e) => onProgress(Math.round(e.percentage)) : undefined,
+    });
+    return blob.url;
+  }
+
+  // Lokálny server – XHR kvôli priebehu nahrávania.
+  const qs = new URLSearchParams({ kind, ...(invite ? { invite } : {}) });
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `/api/upload?${qs}`);
+    if (onProgress) xhr.upload.onprogress = (e) => e.lengthComputable && onProgress(Math.round((e.loaded / e.total) * 100));
+    xhr.onload = () => {
+      let data = {};
+      try { data = JSON.parse(xhr.responseText); } catch { /* nie je JSON */ }
+      if (xhr.status >= 200 && xhr.status < 300) resolve(data.url);
+      else reject(new Error(data.error || `Nahrávanie zlyhalo (${xhr.status})`));
+    };
+    xhr.onerror = () => reject(new Error('Nahrávanie zlyhalo – skontroluj pripojenie.'));
+    const fd = new FormData();
+    fd.append('file', file);
+    xhr.send(fd);
+  });
+}
+
+// Zobrazí priebeh nahrávania v toaste.
+const progressToast = (label) => (p) => toast(`${label} ${p} %`);
