@@ -18,6 +18,8 @@ function render() {
   $$('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === state.tab));
   // Kreslí sa do odpojeného elementu, aby pomalšie async záložky neprepísali novšiu.
   const view = h('main', { id: 'view' });
+  // Voliteľné sekcie (null/false) sa jednoducho vynechajú, nie vypíšu ako text.
+  view.append = (...nodes) => Element.prototype.append.apply(view, nodes.filter((n) => n != null && n !== false));
   const renderer = { outfit: renderOutfit, wardrobe: renderWardrobe, tasks: renderTasks, tokens: renderTokens }[state.tab];
   const seq = (state.seq = (state.seq || 0) + 1);
   const done = startProgress();
@@ -40,7 +42,7 @@ function outfitView(day, user, items) {
       layers.length ? renderStage(side === 'front' ? user.front_photo : user.back_photo, layers, byId)
         : h('p.muted.small', {}, side === 'front' ? 'Bez náhľadu spredu.' : 'Bez náhľadu zozadu.'));
   };
-  const toggle = h('div.chips', {}, ['front', 'back'].map((s) => h('button.chip' + (s === side ? '.active' : ''), {
+  const toggle = h('div.segmented', {}, ['front', 'back'].map((s) => h('button.chip' + (s === side ? '.active' : ''), {
     type: 'button',
     onclick: (ev) => { side = s; $$('.chip', toggle).forEach((c) => c.classList.remove('active')); ev.currentTarget.classList.add('active'); draw(); },
   }, s === 'front' ? 'Spredu' : 'Zozadu')));

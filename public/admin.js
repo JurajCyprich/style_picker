@@ -6,6 +6,8 @@ const state = { tab: 'people', userId: null, date: null, seq: 0 };
 function render() {
   $$('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === state.tab));
   const view = h('main', { id: 'view' });
+  // Voliteľné sekcie (null/false) sa jednoducho vynechajú, nie vypíšu ako text.
+  view.append = (...nodes) => Element.prototype.append.apply(view, nodes.filter((n) => n != null && n !== false));
   const renderer = state.tab === 'people' && state.userId ? renderPerson
     : { people: renderPeople, invites: renderInvites, tasks: renderTasks, settings: renderSettings }[state.tab];
   const seq = ++state.seq;
@@ -27,29 +29,41 @@ function setPendingBadge(n) {
 async function renderPeople(view) {
   const { cycle, users, pending_tasks: pending } = await api('GET', '/api/admin/overview');
   setPendingBadge(pending);
-  const waiting = users.filter((u) => u.active && u.tomorrow && !u.tomorrow.outfit && u.tomorrow.status !== 'self');
-  view.append(h('div.card', {}, [
-    h('div.row.between', {}, [
-      h('div', {}, [h('h2', { style: { margin: 0 } }, `Outfity na zajtra · ${fmtDate(cycle.target)}`),
-        h('div.muted.small', {}, cycle.passed ? `Deadline ${cycle.deadlineLabel} prešiel.` : `Ľudia odovzdávajú ponuky do ${cycle.deadlineLabel}.`)]),
-      waiting.length ? h('span.badge.warn', {}, `${waiting.length} čaká na tvoj výber`) : h('span.badge.ok', {}, 'Nič nečaká'),
+  const active = users.filter((u) => u.active);
+  const waiting = active.filter((u) => u.tomorrow && !u.tomorrow.outfit && u.tomorrow.status !== 'self');
+  const chosen = active.filter((u) => u.tomorrow?.outfit);
+  const stat = (value, label, onclick) => h('div.stat', { onclick, style: onclick ? { cursor: 'pointer' } : undefined }, [h('b', {}, value), h('span', {}, label)]);
+  view.append(
+    h('div.section-head', {}, [
+      h('div', {}, [h('h1', { style: { margin: 0 } }, 'Ľudia'),
+        h('div.muted.small', {}, `Outfity na ${fmtDate(cycle.target)} · ${cycle.passed ? `deadline ${cycle.deadlineLabel} prešiel` : `ponuky do ${cycle.deadlineLabel}`}`)]),
+      h('button.btn.primary', { onclick: () => { state.tab = 'invites'; render(); } }, '+ Pozvať'),
     ]),
-  ]));
+    h('div.stat-row', {}, [
+      stat(active.length, 'aktívnych ľudí'),
+      stat(waiting.length, 'čaká na tvoj výber'),
+      stat(chosen.length, 'outfitov na zajtra'),
+      stat(pending, 'videí na vyhodnotenie', () => { state.tab = 'tasks'; render(); }),
+    ]),
+  );
   if (!users.length) {
-    view.append(h('div.card', {}, [h('p', {}, 'Zatiaľ tu nikto nie je. Vytvor pozvánku a pošli odkaz.'),
+    view.append(h('div.card', { style: { textAlign: 'center', padding: '40px 20px', marginTop: '16px' } }, [
+      h('h2', {}, 'Zatiaľ tu nikto nie je'),
+      h('p.muted', {}, 'Vytvor pozvánku a pošli odkaz osobe, ktorej chceš vyberať oblečenie.'),
       h('button.btn.primary', { onclick: () => { state.tab = 'invites'; render(); } }, 'Vytvoriť pozvánku')]));
     return;
   }
   view.append(h('div.grid.cols-2', { style: { marginTop: '16px' } }, users.map((u) => h('div.card.person-card', {
-    style: { opacity: u.active ? 1 : 0.5 },
-    onclick: () => { state.userId = u.id; state.date = cycle.target; render(); },
+    style: { opacity: u.active ? 1 : 0.55 },
+    onclick: () => { state.userId = u.id; state.date = cycle.target; render(); scrollTo(0, 0); },
   }, [
     h('div.avatar', { style: { backgroundImage: `url("${u.front_photo}")` } }),
     h('div', { style: { flex: 1, minWidth: 0 } }, [
-      h('div.row.between', {}, [h('b', {}, u.name), h('span.token-pill.small', {}, `${u.tokens} 🪙`)]),
+      h('div.row.between', {}, [h('b', {}, u.name), h('span.token-pill.small', {}, `${u.tokens} ${tokenWord(u.tokens)}`)]),
       h('div.small.muted', {}, `${u.item_count} kúskov v šatníku${u.active ? '' : ' · deaktivovaný'}`),
-      h('div.row', { style: { marginTop: '6px', gap: '6px' } }, [h('span.small.muted', {}, 'Zajtra:'), statusBadge(u.tomorrow, cycle, true)]),
+      h('div.row', { style: { marginTop: '8px', gap: '6px' } }, [h('span.small.muted', {}, 'Zajtra'), statusBadge(u.tomorrow, cycle, true)]),
     ]),
+    h('span.chev', {}, '›'),
   ]))));
 }
 
@@ -61,39 +75,42 @@ async function renderPerson(view) {
   const { user, cycle, items, days, transactions } = data;
   const reload = () => render();
 
-  view.append(h('div.row', { style: { marginBottom: '12px' } }, [
-    h('button.btn.small', { onclick: () => { state.userId = null; render(); } }, '← Späť'),
+  view.append(h('div.row', { style: { marginBottom: '14px' } }, [
+    h('button.btn.small', { onclick: () => { state.userId = null; render(); } }, '← Všetci ľudia'),
   ]));
 
   // Hlavička
   const link = location.origin + user.personal_link;
   view.append(h('div.card', {}, [
-    h('div.row', { style: { alignItems: 'flex-start' } }, [
-      h('div.avatar', { style: { backgroundImage: `url("${user.front_photo}")`, width: '72px', height: '96px' } }),
-      h('div.avatar', { style: { backgroundImage: `url("${user.back_photo}")`, width: '72px', height: '96px' } }),
-      h('div', { style: { flex: 1, minWidth: '200px' } }, [
-        h('h1', { style: { marginBottom: '4px' } }, user.name),
-        h('div.row', {}, [h('span.token-pill', {}, `${user.tokens} ${tokenWord(user.tokens)}`),
-          h('button.btn.small', { onclick: () => tokenDialog(user, reload) }, '± Tokeny')]),
-        h('div.row.small', { style: { marginTop: '8px' } }, [
-          h('button.btn.small', { onclick: () => { navigator.clipboard.writeText(link); toast('Osobný odkaz skopírovaný'); } }, 'Kopírovať osobný odkaz'),
-          h('button.btn.small', {
-            onclick: guarded(async () => {
-              if (!confirm('Vytvoriť nový osobný odkaz? Starý prestane fungovať (osoba sa odhlási).')) return;
-              await api('PATCH', `/api/admin/users/${user.id}`, { regenerate_link: true }); toast('Nový odkaz vytvorený'); reload();
-            }),
-          }, 'Nový odkaz'),
-          h('button.btn.small', {
-            onclick: guarded(async () => { await api('PATCH', `/api/admin/users/${user.id}`, { active: !user.active }); reload(); }),
-          }, user.active ? 'Deaktivovať' : 'Aktivovať'),
-          h('button.btn.small.danger', {
-            onclick: guarded(async () => {
-              if (!confirm(`Natrvalo zmazať ${user.name} aj s celým šatníkom?`)) return;
-              await api('DELETE', `/api/admin/users/${user.id}`); state.userId = null; render();
-            }),
-          }, 'Zmazať'),
-        ]),
+    h('div.person-head', {}, [
+      h('div.avatars', {}, [
+        h('div.avatar', { style: { backgroundImage: `url("${user.front_photo}")` }, title: 'Spredu' }),
+        h('div.avatar', { style: { backgroundImage: `url("${user.back_photo}")` }, title: 'Zozadu' }),
       ]),
+      h('div', { style: { flex: 1, minWidth: '160px' } }, [
+        h('h1', { style: { marginBottom: '6px' } }, user.name),
+        h('div.row', {}, [h('span.token-pill', {}, `${user.tokens} ${tokenWord(user.tokens)}`),
+          user.active ? null : h('span.badge.danger', {}, 'deaktivovaný')]),
+      ]),
+    ]),
+    h('div.actions', {}, [
+      h('button.btn.small', { onclick: () => tokenDialog(user, reload) }, '± Tokeny'),
+      h('button.btn.small', { onclick: () => { navigator.clipboard.writeText(link); toast('Osobný odkaz skopírovaný'); } }, 'Kopírovať odkaz'),
+      h('button.btn.small', {
+        onclick: guarded(async () => {
+          if (!confirm('Vytvoriť nový osobný odkaz? Starý prestane fungovať (osoba sa odhlási).')) return;
+          await api('PATCH', `/api/admin/users/${user.id}`, { regenerate_link: true }); toast('Nový odkaz vytvorený'); reload();
+        }),
+      }, 'Nový odkaz'),
+      h('button.btn.small', {
+        onclick: guarded(async () => { await api('PATCH', `/api/admin/users/${user.id}`, { active: !user.active }); reload(); }),
+      }, user.active ? 'Deaktivovať' : 'Aktivovať'),
+      h('button.btn.small.danger', {
+        onclick: guarded(async () => {
+          if (!confirm(`Natrvalo zmazať ${user.name} aj s celým šatníkom?`)) return;
+          await api('DELETE', `/api/admin/users/${user.id}`); state.userId = null; render();
+        }),
+      }, 'Zmazať'),
     ]),
   ]));
 
@@ -103,15 +120,15 @@ async function renderPerson(view) {
   const day = dayMap.get(date) || null;
   const dateIn = h('input', { type: 'date', value: date, style: { width: 'auto' }, onchange: (e) => { state.date = e.target.value; render(); } });
   view.append(h('div.card', {}, [
-    h('div.row.between', {}, [
-      h('h2', { style: { margin: 0 } }, 'Vybrať outfit'),
-      h('div.row', {}, [
+    h('div.section-head', {}, [
+      h('h2', {}, 'Vybrať outfit'),
+      h('div.row', { style: { gap: '6px' } }, [
         h('button.chip' + (date === cycle.today ? '.active' : ''), { onclick: () => { state.date = cycle.today; render(); } }, 'Dnes'),
         h('button.chip' + (date === cycle.target ? '.active' : ''), { onclick: () => { state.date = cycle.target; render(); } }, 'Zajtra'),
         dateIn,
       ]),
     ]),
-    h('div.row', { style: { margin: '8px 0 16px' } }, [h('span.muted', {}, fmtDate(date)), statusBadge(day, cycle, date === cycle.target),
+    h('div.row', { style: { margin: '-4px 0 16px', gap: '8px' } }, [h('span.muted', {}, fmtDate(date)), statusBadge(day, cycle, date === cycle.target),
       day?.offer?.length ? h('span.small.muted', {}, `Ponúknutých kúskov: ${day.offer.length}`) : null]),
     day?.status === 'self' && !day.outfit ? h('div.notice.warn', { style: { marginBottom: '12px' } }, 'Osoba zvolila, že si tento deň vyberie sama. Môžeš jej outfit aj tak vybrať.') : null,
     items.some((i) => !i.archived) ? outfitEditor(user, items, day, date, reload) : h('p.muted', {}, 'Osoba zatiaľ nenahrala žiadne oblečenie.'),
@@ -187,9 +204,10 @@ function outfitEditor(user, items, day, date, reload) {
 
   const stage = h('div.stage');
   const person = h('img.person', { alt: 'Postava' });
-  const tools = h('div');
+  const tools = h('div.tools');
   const palette = h('div');
-  const sideChips = h('div.chips');
+  const sideChips = h('div.segmented');
+  let layerEls = [];
 
   const layers = () => ed[ed.side];
 
@@ -216,41 +234,91 @@ function outfitEditor(user, items, day, date, reload) {
   function drawStage() {
     person.src = ed.side === 'front' ? user.front_photo : user.back_photo;
     stage.replaceChildren(person);
+    layerEls = [];
     layers().forEach((l, idx) => {
       const item = byId.get(l.item_id);
       if (!item) return;
-      const el = h('div.layer' + (idx === ed.sel ? '.sel' : ''), {}, [h('img', { src: item.photo, alt: item.name, draggable: false })]);
+      const el = h('div.layer' + (idx === ed.sel ? '.sel' : ''), { 'data-idx': idx }, [h('img', { src: item.photo, alt: item.name, draggable: false })]);
       placeLayer(el, l);
-      el.addEventListener('pointerdown', (ev) => startDrag(ev, idx, el));
       el.addEventListener('wheel', (ev) => {
         ev.preventDefault();
         l.w = Math.min(200, Math.max(2, l.w * (ev.deltaY < 0 ? 1.06 : 1 / 1.06)));
         placeLayer(el, l);
         if (ed.sel === idx) drawTools();
       }, { passive: false });
+      layerEls[idx] = el;
       stage.append(el);
     });
-    if (!layers().length) stage.append(h('div.empty-hint', {}, 'Potiahni sem oblečenie alebo naň klikni vpravo'));
+    if (!layers().length) stage.append(h('div.empty-hint', {}, 'Pridaj oblečenie z ponuky'));
   }
 
-  function startDrag(ev, idx, el) {
-    ev.preventDefault();
-    if (ed.sel !== idx) { ed.sel = idx; $$('.layer', stage).forEach((n) => n.classList.remove('sel')); el.classList.add('sel'); drawTools(); }
-    const l = layers()[idx];
-    const rect = stage.getBoundingClientRect();
-    const start = { x: ev.clientX, y: ev.clientY, lx: l.x, ly: l.y };
-    el.setPointerCapture(ev.pointerId);
-    el.style.cursor = 'grabbing';
-    const move = (e) => {
-      l.x = start.lx + ((e.clientX - start.x) / rect.width) * 100;
-      l.y = start.ly + ((e.clientY - start.y) / rect.height) * 100;
-      placeLayer(el, l);
-    };
-    const up = () => { el.style.cursor = ''; el.removeEventListener('pointermove', move); el.removeEventListener('pointerup', up); el.removeEventListener('pointercancel', up); };
-    el.addEventListener('pointermove', move);
-    el.addEventListener('pointerup', up);
-    el.addEventListener('pointercancel', up);
+  function selectLayer(idx) {
+    if (ed.sel === idx) return;
+    ed.sel = idx;
+    layerEls.forEach((n, i) => n?.classList.toggle('sel', i === idx));
+    drawTools();
   }
+
+  // Gestá na postave: 1 prst/myš = posun, 2 prsty = zväčšenie a otočenie vybraného kúsku.
+  const pts = new Map();
+  let gesture = null;
+  const pctX = (dx) => (dx / stage.getBoundingClientRect().width) * 100;
+  const pctY = (dy) => (dy / stage.getBoundingClientRect().height) * 100;
+  function beginGesture(target) {
+    const l = ed.sel !== null ? layers()[ed.sel] : null;
+    const p = [...pts.values()];
+    if (p.length >= 2 && l) {
+      const [a, b] = p;
+      gesture = { type: 'pinch', d0: Math.hypot(b.x - a.x, b.y - a.y) || 1, a0: Math.atan2(b.y - a.y, b.x - a.x),
+        m0: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, w0: l.w, r0: l.rot, x0: l.x, y0: l.y };
+    } else if (p.length === 1) {
+      const layerEl = target?.closest?.('.layer');
+      if (layerEl) selectLayer(Number(layerEl.dataset.idx));
+      const cur = ed.sel !== null ? layers()[ed.sel] : null;
+      gesture = layerEl && cur ? { type: 'drag', sx: p[0].x, sy: p[0].y, x0: cur.x, y0: cur.y } : { type: 'tap', sx: p[0].x, sy: p[0].y };
+    } else gesture = null;
+  }
+  stage.addEventListener('pointerdown', (e) => {
+    if (e.button > 0) return;
+    e.preventDefault();
+    stage.setPointerCapture(e.pointerId);
+    pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    beginGesture(e.target);
+  });
+  stage.addEventListener('pointermove', (e) => {
+    if (!pts.has(e.pointerId)) return;
+    pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    const l = ed.sel !== null ? layers()[ed.sel] : null;
+    const el = layerEls[ed.sel];
+    if (!gesture || !l || !el) return;
+    if (gesture.type === 'drag') {
+      l.x = gesture.x0 + pctX(e.clientX - gesture.sx);
+      l.y = gesture.y0 + pctY(e.clientY - gesture.sy);
+    } else if (gesture.type === 'pinch') {
+      const [a, b] = [...pts.values()];
+      const d = Math.hypot(b.x - a.x, b.y - a.y);
+      const ang = Math.atan2(b.y - a.y, b.x - a.x);
+      let rot = gesture.r0 + ((ang - gesture.a0) * 180) / Math.PI;
+      rot = ((rot + 540) % 360) - 180;
+      l.w = Math.min(200, Math.max(2, gesture.w0 * (d / gesture.d0)));
+      l.rot = Math.round(rot);
+      l.x = gesture.x0 + pctX((a.x + b.x) / 2 - gesture.m0.x);
+      l.y = gesture.y0 + pctY((a.y + b.y) / 2 - gesture.m0.y);
+    } else return;
+    el.classList.add('sel');
+    placeLayer(el, l);
+  });
+  const endPointer = (e) => {
+    if (!pts.has(e.pointerId)) return;
+    pts.delete(e.pointerId);
+    // Ťuknutie mimo oblečenia zruší výber.
+    if (gesture?.type === 'tap' && pts.size === 0 && Math.hypot(e.clientX - gesture.sx, e.clientY - gesture.sy) < 6) {
+      ed.sel = null; drawStage(); drawTools();
+    } else if (gesture?.type === 'pinch' || gesture?.type === 'drag') drawTools();
+    beginGesture(null);
+  };
+  stage.addEventListener('pointerup', endPointer);
+  stage.addEventListener('pointercancel', endPointer);
 
   // HTML5 drag & drop z palety na postavu
   stage.addEventListener('dragover', (e) => { e.preventDefault(); stage.classList.add('dragover'); });
@@ -264,11 +332,15 @@ function outfitEditor(user, items, day, date, reload) {
     addLayer(item, ((e.clientX - r.left) / r.width) * 100, ((e.clientY - r.top) / r.height) * 100);
     drawAll();
   });
-  stage.addEventListener('pointerdown', (e) => { if (e.target === stage || e.target === person) { ed.sel = null; drawStage(); drawTools(); } });
 
   function drawTools() {
     const l = ed.sel !== null ? layers()[ed.sel] : null;
-    if (!l) { tools.replaceChildren(h('p.small.muted', {}, 'Klikni na kúsok na postave a môžeš ho posúvať, zväčšovať (koliesko myši / posuvník) a otáčať.')); return; }
+    if (!l) {
+      tools.replaceChildren(h('p.small.muted', { style: { margin: 0 } }, matchMedia('(pointer: coarse)').matches
+        ? 'Ťukni na kúsok na postave. Ťahaj ho prstom, dvoma prstami ho zväčšíš a otočíš.'
+        : 'Klikni na kúsok na postave. Ťahaj ho myšou, kolieskom ho zväčšíš, posuvníkmi otočíš.'));
+      return;
+    }
     const item = byId.get(l.item_id);
     const upd = () => drawStage();
     const slider = (label, key, min, max, step) => [h('span', {}, label), h('input', {
@@ -281,8 +353,8 @@ function outfitEditor(user, items, day, date, reload) {
         h('button.btn.small', { onclick: () => { const [x] = layers().splice(ed.sel, 1); layers().push(x); ed.sel = layers().length - 1; upd(); } }, 'Dopredu'),
         h('button.btn.small', { onclick: () => { const [x] = layers().splice(ed.sel, 1); layers().unshift(x); ed.sel = 0; upd(); } }, 'Dozadu'),
         h('button.btn.small', { onclick: () => { l.flip = !l.flip; upd(); } }, 'Zrkadliť'),
-        h('button.btn.small' + (l.blend ? '.primary' : ''), { title: 'Skryje biele pozadie fotky', onclick: () => { l.blend = !l.blend; upd(); drawTools(); } }, 'Skryť biele pozadie'),
-        h('button.btn.small.danger', { onclick: () => { layers().splice(ed.sel, 1); ed.sel = null; drawAll(); } }, 'Zložiť z tejto strany'),
+        h('button.btn.small' + (l.blend ? '.primary' : ''), { title: 'Skryje biele pozadie fotky', onclick: () => { l.blend = !l.blend; upd(); drawTools(); } }, 'Bez bieleho pozadia'),
+        h('button.btn.small.danger', { onclick: () => { layers().splice(ed.sel, 1); ed.sel = null; drawAll(); } }, 'Zložiť'),
       ]),
     ]));
   }
@@ -333,16 +405,18 @@ function outfitEditor(user, items, day, date, reload) {
     reload();
   });
 
-  return h('div.stack', {}, [
-    h('div.editor', {}, [
-      h('div.stage-wrap', {}, [sideChips, stage, tools]),
-      h('div', {}, [h('h3', {}, 'Oblečenie'), h('p.small.muted', {}, 'Potiahni kúsok na postavu alebo naň klikni. Zelený okraj = osoba ho ponúkla. Opätovným klikom kúsok z outfitu odstrániš.'), palette]),
-    ]),
-    h('label.field', {}, [h('span', {}, 'Poznámka'), note]),
-    h('div.row', {}, [
-      h('button.btn.primary', { onclick: save }, day?.outfit ? 'Uložiť zmeny' : 'Potvrdiť outfit'),
-      day?.outfit ? h('button.btn.danger', { onclick: clear }, 'Zrušiť outfit') : null,
-      day?.outfit ? h('span.small.muted', {}, `Vybrané ${fmtDateTime(day.outfit_at)}`) : null,
+  return h('div.editor', {}, [
+    h('div.stage-wrap', {}, [sideChips, stage, tools]),
+    h('div.editor-side', {}, [
+      h('h3', {}, 'Oblečenie'),
+      h('p.small.muted', {}, 'Ťukni na kúsok alebo ho potiahni na postavu. Druhým ťuknutím ho z outfitu odstrániš.'),
+      palette,
+      h('label.field', { style: { marginTop: '16px' } }, [h('span', {}, 'Poznámka pre osobu'), note]),
+      h('div.row', {}, [
+        h('button.btn.primary', { onclick: save }, day?.outfit ? 'Uložiť zmeny' : 'Potvrdiť outfit'),
+        day?.outfit ? h('button.btn.danger', { onclick: clear }, 'Zrušiť outfit') : null,
+      ]),
+      day?.outfit ? h('p.small.muted', { style: { marginTop: '8px' } }, `Vybrané ${fmtDateTime(day.outfit_at)}`) : null,
     ]),
   ]);
 }

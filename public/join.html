@@ -1,10 +1,21 @@
 <!doctype html>
 <html lang="sk">
 <head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Registrácia · Style Picker</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap">
 <link rel="stylesheet" href="/style.css">
-<meta name="theme-color" content="#b0496b">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Style Picker">
+<meta name="theme-color" content="#f7f7f5" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#111113" media="(prefers-color-scheme: dark)">
 </head>
 <body>
 <div id="splash" aria-hidden="true"><div class="splash-inner"><div class="loader"><div class="loader-ring"></div><div class="loader-track"></div><span class="loader-mark">SP</span></div><div class="splash-brand">Style Picker</div></div></div>
@@ -14,7 +25,8 @@
     <p class="muted">Pozvánka už bola použitá, bola zrušená, alebo neexistuje. Požiadaj admina o nový odkaz.</p>
   </div>
   <div class="card hidden" id="form-card">
-    <h1>Vitaj v Style <span style="color:var(--accent)">Picker</span></h1>
+    <div class="brand" style="margin-bottom:20px"><span class="brand-mark">SP</span>Style Picker</div>
+    <h1>Vitaj 👋</h1>
     <p class="muted">Nahraj oblečenie, ktoré máš, a admin ti každý deň vyberie, čo si oblečieš. Na začiatok potrebujeme tvoje meno a dve fotky celej postavy v <b>T-póze</b> – ruky vodorovne do strán, nohy mierne od seba, celé telo v zábere, jednoduché pozadie, tesnejšie oblečenie.</p>
     <form id="f">
       <label class="field"><span>Meno / prezývka</span><input type="text" name="name" maxlength="60" required></label>

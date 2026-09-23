@@ -1,24 +1,37 @@
 <!doctype html>
 <html lang="sk">
 <head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Admin · Style Picker</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap">
 <link rel="stylesheet" href="/style.css">
-<meta name="theme-color" content="#b0496b">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Style Picker">
+<meta name="theme-color" content="#f7f7f5" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#111113" media="(prefers-color-scheme: dark)">
 </head>
 <body>
 <div id="splash" aria-hidden="true"><div class="splash-inner"><div class="loader"><div class="loader-ring"></div><div class="loader-track"></div><span class="loader-mark">SP</span></div><div class="splash-brand">Style Picker</div></div></div>
 <header class="topbar">
   <div class="topbar-inner">
-    <div class="brand">Style <span>Picker</span> <span class="badge">admin</span></div>
-    <button class="btn small" onclick="logout()">Odhlásiť</button>
+    <div class="brand"><span class="brand-mark">SP</span>Style Picker <span class="badge">admin</span></div>
+    <div class="tabs-slot">
+      <nav class="tabs" aria-label="Navigácia">
+        <button class="tab active" data-tab="people"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8"/></svg><span>Ľudia</span></button>
+        <button class="tab" data-tab="invites"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg><span>Pozvánky</span></button>
+        <button class="tab" data-tab="tasks"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m22 8-6 4 6 4V8z"/><rect x="2" y="6" width="14" height="12" rx="2"/></svg><span>Úlohy</span><span class="badge warn hidden" id="pending-badge"></span></button>
+        <button class="tab" data-tab="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></svg><span>Nastavenia</span></button>
+      </nav>
+    </div>
+    <button class="icon-btn" onclick="logout()" title="Odhlásiť" aria-label="Odhlásiť"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg></button>
   </div>
-  <nav class="tabs">
-    <button class="tab active" data-tab="people">Ľudia</button>
-    <button class="tab" data-tab="invites">Pozvánky</button>
-    <button class="tab" data-tab="tasks">Úlohy <span class="badge warn hidden" id="pending-badge"></span></button>
-    <button class="tab" data-tab="settings">Nastavenia</button>
-  </nav>
 </header>
 <main id="view"></main>
 <dialog id="dlg"></dialog>
