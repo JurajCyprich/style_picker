@@ -178,7 +178,8 @@ function loadScript(src) {
 // kind: 'image' | 'video'; invite: kód pozvánky (pri registrácii); onProgress(0–100)
 async function uploadFile(file, kind, { invite, onProgress } = {}) {
   if (!file) throw new Error('Vyber súbor.');
-  const { storage, max_mb: maxMb } = await whoami();
+  const { storage, max_mb: maxMb, blob_access: blobAccess, blob_error: blobError } = await whoami();
+  if (blobError) throw new Error(blobError);
   if (storage === 'none') throw new Error('Nahrávanie fotiek ešte nie je nastavené. Daj vedieť adminovi.');
   if (file.size > maxMb[kind] * 1024 * 1024) throw new Error(`Súbor je príliš veľký (max ${maxMb[kind]} MB).`);
 
@@ -186,7 +187,7 @@ async function uploadFile(file, kind, { invite, onProgress } = {}) {
     if (!window.VercelBlob) await loadScript('/vendor/vercel-blob-client.js');
     const safeName = (file.name || 'subor').toLowerCase().replace(/[^a-z0-9.]+/g, '-').slice(-60);
     const blob = await window.VercelBlob.upload(`${kind}s/${safeName}`, file, {
-      access: 'public',
+      access: blobAccess || 'public',
       handleUploadUrl: '/api/blob-upload',
       clientPayload: JSON.stringify({ kind, invite }),
       contentType: file.type,

@@ -6,6 +6,7 @@ process.env.TZ = process.env.APP_TIMEZONE || 'Europe/Bratislava';
 const path = require('node:path');
 const fs = require('node:fs');
 const crypto = require('node:crypto');
+const { Readable } = require('node:stream');
 const express = require('express');
 const multer = require('multer');
 
@@ -217,7 +218,33 @@ function clearCookie(res, name) { res.append('Set-Cookie', `${name}=; Path=/; Ht
 
 // Prijímame len súbory nahraté do nášho úložiska.
 const LOCAL_FILE = /^\/uploads\/[A-Za-z0-9_-]+(\.[a-z0-9]{1,6})?$/;
-const BLOB_FILE = /^https:\/\/[a-z0-9-]+\.public\.blob\.vercel-storage\.com\/[^\s"'<>]+$/i;
+const BLOB_FILE = /^https:\/\/[a-z0-9-]+\.(public|private)\.blob\.vercel-storage\.com\/[^\s"'<>]+$/i;
+const PRIVATE_BLOB = /^https:\/\/[a-z0-9-]+\.private\.blob\.vercel-storage\.com\//i;
+// Súkromný Blob sa nedá načítať priamo v prehliadači – ide cez /api/file (len pre prihlásených).
+const viewUrl = (u) => (u && PRIVATE_BLOB.test(u) ? `/api/file?u=${encodeURIComponent(u)}` : u);
+
+// Či je Blob úložisko verejné alebo súkromné – zistí sa raz skúšobným zápisom a uloží do nastavení.
+let blobAccess = process.env.BLOB_ACCESS || null;
+async function getBlobAccess() {
+  if (blobAccess) return blobAccess;
+  // Kľúč je viazaný na konkrétne úložisko – po výmene Blobu sa typ zistí znova.
+  const storeId = (BLOB_TOKEN.match(/^vercel_blob_rw_([^_]+)_/) || [])[1] || 'default';
+  const key = `blob_access_${storeId}`;
+  const saved = await getSetting(key);
+  if (saved) return (blobAccess = saved);
+  const { put, del } = require('@vercel/blob');
+  for (const access of ['public', 'private']) {
+    try {
+      const r = await put('_probe/access.txt', 'ok', { access, token: BLOB_TOKEN, allowOverwrite: true, addRandomSuffix: false });
+      await del(r.url, { token: BLOB_TOKEN }).catch(() => {});
+      blobAccess = access;
+      await setSetting(key, access);
+      return access;
+    } catch (e) {
+      if (access === 'private') throw new HttpError(502, `Úložisko Blob hlási chybu: ${e.message}`);
+    }
+  }
+}
 function fileUrl(v) {
   const s = String(v || '');
   return (STORAGE === 'blob' ? BLOB_FILE : LOCAL_FILE).test(s) ? s : null;
@@ -231,13 +258,13 @@ async function removeFile(url) {
 function publicUser(u, { withToken = false } = {}) {
   const out = {
     id: u.id, name: u.name, tokens: u.tokens, active: !!u.active, created_at: u.created_at,
-    front_photo: u.front_photo, back_photo: u.back_photo,
+    front_photo: viewUrl(u.front_photo), back_photo: viewUrl(u.back_photo),
   };
   if (withToken) out.personal_link = `/me/${u.token}`;
   return out;
 }
 const publicItem = (i) => ({ id: i.id, name: i.name, category_id: i.category_id, category: i.category_name || null,
-  photo: i.photo, archived: !!i.archived, created_at: i.created_at });
+  photo: viewUrl(i.photo), archived: !!i.archived, created_at: i.created_at });
 function publicDay(d) {
   if (!d) return null;
   return { date: d.date, status: d.status, offer: JSON.parse(d.offer), submitted_at: d.submitted_at,
@@ -294,7 +321,13 @@ app.get('/me/:token', async (req, res) => {
 
 // ---- prihlásenie ----
 app.get('/api/whoami', async (req, res) => {
+  // Chyba úložiska nesmie zablokovať načítanie stránky – ukáže sa až pri nahrávaní.
+  let blob = { access: null, error: null };
+  if (STORAGE === 'blob') {
+    try { blob.access = await getBlobAccess(); } catch (e) { blob = { access: null, error: e.message }; }
+  }
   res.json({ admin: !!(await adminSession(req)), user: !!(await currentUser(req)), storage: STORAGE, max_mb: MAX_MB,
+    blob_access: blob.access, blob_error: blob.error,
     admin_password_missing: !(await getSetting('admin_password')) });
 });
 app.post('/api/admin/login', async (req, res) => {
@@ -351,6 +384,37 @@ app.post('/api/blob-upload', async (req, res) => {
     throw new HttpError(502, `Úložisko Blob hlási chybu: ${e.message}`);
   }
   res.json(result);
+});
+
+// Súbory zo súkromného Blobu: server ich načíta s kľúčom a pošle ďalej, len prihláseným.
+// Veľké súbory (videá) idú po častiach do 4 MB, lebo Vercel obmedzuje veľkosť odpovede.
+app.get('/api/file', async (req, res) => {
+  const u = String(req.query.u || '');
+  if (STORAGE !== 'blob' || !PRIVATE_BLOB.test(u) || !BLOB_FILE.test(u)) throw notFound('Súbor neexistuje.');
+  const c = parseCookies(req);
+  const allowed = (c.admin && (await db.get('SELECT 1 AS ok FROM sessions WHERE token = ?', c.admin)))
+    || (c.user && (await db.get('SELECT 1 AS ok FROM users WHERE token = ? AND active = 1', c.user)));
+  if (!allowed) throw new HttpError(401, 'Prihlás sa.');
+  const headers = { authorization: `Bearer ${BLOB_TOKEN}` };
+  if (req.headers['if-none-match']) headers['if-none-match'] = req.headers['if-none-match'];
+  const CHUNK = 4 * 1024 * 1024;
+  const m = /^bytes=(\d+)-(\d*)$/.exec(req.headers.range || '');
+  if (m) {
+    const start = Number(m[1]);
+    const end = Math.min(m[2] ? Number(m[2]) : Infinity, start + CHUNK - 1);
+    headers.range = `bytes=${start}-${end}`;
+  }
+  const r = await fetch(u, { headers });
+  if (r.status === 304) return res.status(304).end();
+  if (!r.ok) throw new HttpError(r.status === 404 ? 404 : 502, 'Súbor sa nepodarilo načítať.');
+  res.status(r.status);
+  for (const k of ['content-type', 'content-length', 'content-range', 'etag', 'last-modified']) {
+    const v = r.headers.get(k);
+    if (v) res.setHeader(k, v);
+  }
+  res.setHeader('accept-ranges', 'bytes');
+  res.setHeader('cache-control', 'private, max-age=86400');
+  Readable.fromWeb(r.body).pipe(res);
 });
 
 // Lokálny disk (vývoj alebo vlastný server).
@@ -512,8 +576,8 @@ me.post('/self', async (req, res) => {
 me.get('/tasks', async (req, res) => {
   res.json({
     tasks: await db.all('SELECT id, title, description, reward FROM tasks WHERE active = 1 ORDER BY created_at DESC'),
-    submissions: await db.all(`SELECT s.*, t.title FROM task_submissions s JOIN tasks t ON t.id = s.task_id
-      WHERE s.user_id = ? ORDER BY s.created_at DESC`, req.user.id),
+    submissions: (await db.all(`SELECT s.*, t.title FROM task_submissions s JOIN tasks t ON t.id = s.task_id
+      WHERE s.user_id = ? ORDER BY s.created_at DESC`, req.user.id)).map((s) => ({ ...s, video: viewUrl(s.video) })),
   });
 });
 
@@ -664,9 +728,9 @@ admin.delete('/invites/:code', async (req, res) => {
 admin.get('/tasks', async (_req, res) => {
   res.json({
     tasks: await db.all('SELECT * FROM tasks ORDER BY active DESC, created_at DESC'),
-    submissions: await db.all(`SELECT s.*, t.title, t.reward, u.name AS user_name FROM task_submissions s
+    submissions: (await db.all(`SELECT s.*, t.title, t.reward, u.name AS user_name FROM task_submissions s
       JOIN tasks t ON t.id = s.task_id JOIN users u ON u.id = s.user_id
-      ORDER BY (s.status = 'pending') DESC, s.created_at DESC LIMIT 200`),
+      ORDER BY (s.status = 'pending') DESC, s.created_at DESC LIMIT 200`)).map((s) => ({ ...s, video: viewUrl(s.video) })),
   });
 });
 admin.post('/tasks', async (req, res) => {
