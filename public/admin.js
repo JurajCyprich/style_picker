@@ -569,6 +569,7 @@ function editTask(t) {
 // ---------------------------------------------------------------------------
 async function renderSettings(view) {
   const s = await api('GET', '/api/admin/settings');
+  const diag = await api('GET', '/api/admin/diagnostics').catch(() => null);
   const deadline = h('input', { type: 'time', value: s.deadline, required: true });
   const weekly = h('input', { type: 'number', min: 0, value: s.weekly_tokens });
   const late = h('input', { type: 'number', min: 0, value: s.late_cost });
@@ -616,6 +617,26 @@ async function renderSettings(view) {
       }, '×'),
     ]))),
   ]));
+  if (diag) {
+    const ok = diag.storage === 'local' || diag.blob?.ok;
+    const row = (k, v) => h('div.row.between', {}, [h('span.muted', {}, k), h('b', {}, v)]);
+    view.append(h('div.card', {}, [
+      h('h2', {}, 'Diagnostika'),
+      h('div.notice' + (ok ? '.ok' : '.danger'), { style: { marginBottom: '12px' } }, ok
+        ? 'Úložisko na fotky a videá funguje.'
+        : diag.storage === 'none'
+          ? 'Appka nevidí žiadne Blob úložisko. Pripoj Blob k projektu a daj Redeploy.'
+          : `Blob hlási chybu: ${diag.blob?.error || 'neznáma'}`),
+      h('div.list', {}, [
+        row('Prostredie', diag.vercel ? 'Vercel' : 'vlastný server'),
+        row('Databáza', diag.database || 'chýba'),
+        row('Úložisko súborov', diag.storage === 'blob' ? `Vercel Blob (${diag.blob_mode === 'oidc' ? 'bez kľúča, OIDC' : 'kľúč'})` : diag.storage === 'local' ? 'lokálny disk' : 'chýba'),
+        diag.blob?.access ? row('Typ Blobu', diag.blob.access === 'private' ? 'súkromný' : 'verejný') : null,
+        h('div', {}, [h('div.muted.small', { style: { marginBottom: '6px' } }, 'Nastavené premenné (len názvy):'),
+          h('div.chips', { style: { flexWrap: 'wrap' } }, diag.env.length ? diag.env.map((n) => h('span.chip', {}, n)) : [h('span.muted.small', {}, 'žiadne')])]),
+      ]),
+    ]));
+  }
 }
 
 render();

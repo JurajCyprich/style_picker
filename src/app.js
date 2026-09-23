@@ -19,8 +19,14 @@ const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 // Vercel pri pripojení Blob úložiska môže premennej pridať predponu (napr. STYLE_BLOB_READ_WRITE_TOKEN).
 const BLOB_TOKEN = process.env.BLOB_READ_WRITE_TOKEN
   || Object.entries(process.env).find(([k, v]) => k.endsWith('BLOB_READ_WRITE_TOKEN') && v)?.[1];
+// Novšie Blob úložiská sa pripájajú bez kľúča: Vercel nastaví BLOB_STORE_ID a prihlasuje sa cez OIDC.
+const BLOB_STORE_ID = process.env.BLOB_STORE_ID
+  || Object.entries(process.env).find(([k, v]) => k.endsWith('BLOB_STORE_ID') && v)?.[1];
+const BLOB_MODE = BLOB_TOKEN ? 'token' : BLOB_STORE_ID ? 'oidc' : null;
+// Parametre pre knižnicu @vercel/blob: kľúč, alebo úložisko pre OIDC prihlásenie.
+const blobAuth = () => (BLOB_TOKEN ? { token: BLOB_TOKEN } : { storeId: BLOB_STORE_ID });
 // Na Verceli sa na disk zapisovať nedá – bez Blobu nahrávanie nefunguje ('none').
-const STORAGE = BLOB_TOKEN ? 'blob' : ON_VERCEL ? 'none' : 'local';
+const STORAGE = BLOB_MODE ? 'blob' : ON_VERCEL ? 'none' : 'local';
 const NO_STORAGE_MSG = 'Nahrávanie nie je nastavené: vo Verceli otvor Storage → Blob, pripoj ho k projektu a daj Redeploy.';
 const MAX_MB = { image: 15, video: 300 };
 
@@ -228,15 +234,15 @@ let blobAccess = process.env.BLOB_ACCESS || null;
 async function getBlobAccess() {
   if (blobAccess) return blobAccess;
   // Kľúč je viazaný na konkrétne úložisko – po výmene Blobu sa typ zistí znova.
-  const storeId = (BLOB_TOKEN.match(/^vercel_blob_rw_([^_]+)_/) || [])[1] || 'default';
+  const storeId = BLOB_STORE_ID || (BLOB_TOKEN.match(/^vercel_blob_rw_([^_]+)_/) || [])[1] || 'default';
   const key = `blob_access_${storeId}`;
   const saved = await getSetting(key);
   if (saved) return (blobAccess = saved);
   const { put, del } = require('@vercel/blob');
   for (const access of ['public', 'private']) {
     try {
-      const r = await put('_probe/access.txt', 'ok', { access, token: BLOB_TOKEN, allowOverwrite: true, addRandomSuffix: false });
-      await del(r.url, { token: BLOB_TOKEN }).catch(() => {});
+      const r = await put('_probe/access.txt', 'ok', { access, ...blobAuth(), allowOverwrite: true, addRandomSuffix: false });
+      await del(r.url, blobAuth()).catch(() => {});
       blobAccess = access;
       await setSetting(key, access);
       return access;
@@ -252,7 +258,7 @@ function fileUrl(v) {
 async function removeFile(url) {
   if (!url) return;
   if (LOCAL_FILE.test(url)) fs.rm(path.join(UPLOAD_DIR, path.basename(url)), { force: true }, () => {});
-  else if (BLOB_FILE.test(url) && STORAGE === 'blob') await require('@vercel/blob').del(url, { token: BLOB_TOKEN }).catch(() => {});
+  else if (BLOB_FILE.test(url) && STORAGE === 'blob') await require('@vercel/blob').del(url, blobAuth()).catch(() => {});
 }
 
 function publicUser(u, { withToken = false } = {}) {
@@ -327,7 +333,7 @@ app.get('/api/whoami', async (req, res) => {
     try { blob.access = await getBlobAccess(); } catch (e) { blob = { access: null, error: e.message }; }
   }
   res.json({ admin: !!(await adminSession(req)), user: !!(await currentUser(req)), storage: STORAGE, max_mb: MAX_MB,
-    blob_access: blob.access, blob_error: blob.error,
+    blob_access: blob.access, blob_error: blob.error, blob_mode: BLOB_MODE,
     admin_password_missing: !(await getSetting('admin_password')) });
 });
 app.post('/api/admin/login', async (req, res) => {
@@ -359,24 +365,38 @@ async function mayUpload(req, kind, invite) {
 // Vercel Blob: prehliadač nahráva priamo do úložiska, server len vydá krátkodobý token.
 app.post('/api/blob-upload', async (req, res) => {
   if (STORAGE !== 'blob') throw new HttpError(503, NO_STORAGE_MSG);
-  const { handleUpload } = require('@vercel/blob/client');
+  const limits = async (clientPayload) => {
+    let payload = {};
+    try { payload = JSON.parse(clientPayload || '{}'); } catch { /* prázdny payload */ }
+    await mayUpload(req, payload.kind, payload.invite);
+    return { allowedContentTypes: [`${payload.kind}/*`], maximumSizeInBytes: MAX_MB[payload.kind] * 1024 * 1024 };
+  };
   let result;
   try {
-    result = await handleUpload({
-      token: BLOB_TOKEN,
-      request: req,
-      body: req.body,
-      onBeforeGenerateToken: async (_pathname, clientPayload) => {
-        let payload = {};
-        try { payload = JSON.parse(clientPayload || '{}'); } catch { /* prázdny payload */ }
-        await mayUpload(req, payload.kind, payload.invite);
-        return {
-          allowedContentTypes: [`${payload.kind}/*`],
-          maximumSizeInBytes: MAX_MB[payload.kind] * 1024 * 1024,
-          addRandomSuffix: true,
-        };
-      },
-    });
+    if (BLOB_MODE === 'token') {
+      const { handleUpload } = require('@vercel/blob/client');
+      result = await handleUpload({
+        token: BLOB_TOKEN,
+        request: req,
+        body: req.body,
+        onBeforeGenerateToken: async (_pathname, clientPayload) => ({ ...(await limits(clientPayload)), addRandomSuffix: true }),
+      });
+    } else {
+      // Bez kľúča: server cez OIDC vydá krátkodobú podpísanú adresu, na ktorú prehliadač nahrá súbor.
+      const { handleUploadPresigned } = require('@vercel/blob/client');
+      const { issueSignedToken } = require('@vercel/blob');
+      result = await handleUploadPresigned({
+        request: req,
+        body: req.body,
+        // Kľúč je potrebný len na overenie spätného volania po nahratí, ktoré nepoužívame.
+        webhookPublicKey: process.env.BLOB_WEBHOOK_PUBLIC_KEY || 'unused',
+        getSignedToken: async (pathname, clientPayload) => {
+          const lim = await limits(clientPayload);
+          const token = await issueSignedToken({ ...blobAuth(), pathname, operations: ['put'], validUntil: Date.now() + 15 * 60 * 1000, ...lim });
+          return { token, urlOptions: { ...lim, addRandomSuffix: true } };
+        },
+      });
+    }
   } catch (e) {
     if (e instanceof HttpError) throw e;
     // Chybu z Vercel Blob ukážeme, nech je jasné, čo s úložiskom nie je v poriadku.
@@ -395,8 +415,7 @@ app.get('/api/file', async (req, res) => {
   const allowed = (c.admin && (await db.get('SELECT 1 AS ok FROM sessions WHERE token = ?', c.admin)))
     || (c.user && (await db.get('SELECT 1 AS ok FROM users WHERE token = ? AND active = 1', c.user)));
   if (!allowed) throw new HttpError(401, 'Prihlás sa.');
-  const headers = { authorization: `Bearer ${BLOB_TOKEN}` };
-  if (req.headers['if-none-match']) headers['if-none-match'] = req.headers['if-none-match'];
+  const headers = {};
   const CHUNK = 4 * 1024 * 1024;
   const m = /^bytes=(\d+)-(\d*)$/.exec(req.headers.range || '');
   if (m) {
@@ -404,17 +423,23 @@ app.get('/api/file', async (req, res) => {
     const end = Math.min(m[2] ? Number(m[2]) : Infinity, start + CHUNK - 1);
     headers.range = `bytes=${start}-${end}`;
   }
-  const r = await fetch(u, { headers });
-  if (r.status === 304) return res.status(304).end();
-  if (!r.ok) throw new HttpError(r.status === 404 ? 404 : 502, 'Súbor sa nepodarilo načítať.');
-  res.status(r.status);
+  let r;
+  try {
+    r = await require('@vercel/blob').get(u, { access: 'private', ...blobAuth(), headers, ifNoneMatch: req.headers['if-none-match'] || undefined });
+  } catch (e) {
+    console.error(e);
+    throw new HttpError(502, 'Súbor sa nepodarilo načítať.');
+  }
+  if (!r) throw notFound('Súbor neexistuje.');
+  if (r.statusCode === 304) return res.status(304).end();
+  res.status(r.headers.get('content-range') ? 206 : 200);
   for (const k of ['content-type', 'content-length', 'content-range', 'etag', 'last-modified']) {
     const v = r.headers.get(k);
     if (v) res.setHeader(k, v);
   }
   res.setHeader('accept-ranges', 'bytes');
   res.setHeader('cache-control', 'private, max-age=86400');
-  Readable.fromWeb(r.body).pipe(res);
+  Readable.fromWeb(r.stream).pipe(res);
 });
 
 // Lokálny disk (vývoj alebo vlastný server).
@@ -771,6 +796,16 @@ admin.post('/submissions/:id/review', async (req, res) => {
     await addTransaction(s.user_id, granted, `${label}: ${s.title}${bonus ? ` (+${bonus} extra)` : ''}`);
   }
   res.json({ ok: true, granted });
+});
+
+// ---- diagnostika (len názvy premenných, nikdy nie hodnoty) ----
+admin.get('/diagnostics', async (_req, res) => {
+  const names = Object.keys(process.env).filter((k) => /BLOB|TURSO|DATABASE_URL|ADMIN_PASSWORD|OIDC/.test(k)).sort();
+  let blob = null;
+  if (STORAGE === 'blob') {
+    try { blob = { ok: true, access: await getBlobAccess() }; } catch (e) { blob = { ok: false, error: e.message }; }
+  }
+  res.json({ vercel: ON_VERCEL, storage: STORAGE, blob_mode: BLOB_MODE, blob, database: DB_URL ? (DB_URL.startsWith('file:') ? 'lokálny súbor' : 'Turso') : null, env: names });
 });
 
 // ---- nastavenia ----
