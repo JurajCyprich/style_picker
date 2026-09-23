@@ -15,7 +15,12 @@ const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 
 // Úložisko súborov: Vercel Blob (keď je nastavený token), inak lokálny disk.
-const STORAGE = process.env.BLOB_READ_WRITE_TOKEN ? 'blob' : 'local';
+// Vercel pri pripojení Blob úložiska môže premennej pridať predponu (napr. STYLE_BLOB_READ_WRITE_TOKEN).
+const BLOB_TOKEN = process.env.BLOB_READ_WRITE_TOKEN
+  || Object.entries(process.env).find(([k, v]) => k.endsWith('BLOB_READ_WRITE_TOKEN') && v)?.[1];
+// Na Verceli sa na disk zapisovať nedá – bez Blobu nahrávanie nefunguje ('none').
+const STORAGE = BLOB_TOKEN ? 'blob' : ON_VERCEL ? 'none' : 'local';
+const NO_STORAGE_MSG = 'Nahrávanie nie je nastavené: vo Verceli otvor Storage → Blob, pripoj ho k projektu a daj Redeploy.';
 const MAX_MB = { image: 15, video: 300 };
 
 // ---------------------------------------------------------------------------
@@ -220,7 +225,7 @@ function fileUrl(v) {
 async function removeFile(url) {
   if (!url) return;
   if (LOCAL_FILE.test(url)) fs.rm(path.join(UPLOAD_DIR, path.basename(url)), { force: true }, () => {});
-  else if (BLOB_FILE.test(url) && STORAGE === 'blob') await require('@vercel/blob').del(url).catch(() => {});
+  else if (BLOB_FILE.test(url) && STORAGE === 'blob') await require('@vercel/blob').del(url, { token: BLOB_TOKEN }).catch(() => {});
 }
 
 function publicUser(u, { withToken = false } = {}) {
@@ -320,22 +325,31 @@ async function mayUpload(req, kind, invite) {
 
 // Vercel Blob: prehliadač nahráva priamo do úložiska, server len vydá krátkodobý token.
 app.post('/api/blob-upload', async (req, res) => {
-  if (STORAGE !== 'blob') throw notFound('Blob úložisko nie je zapnuté.');
+  if (STORAGE !== 'blob') throw new HttpError(503, NO_STORAGE_MSG);
   const { handleUpload } = require('@vercel/blob/client');
-  const result = await handleUpload({
-    request: req,
-    body: req.body,
-    onBeforeGenerateToken: async (_pathname, clientPayload) => {
-      let payload = {};
-      try { payload = JSON.parse(clientPayload || '{}'); } catch { /* prázdny payload */ }
-      await mayUpload(req, payload.kind, payload.invite);
-      return {
-        allowedContentTypes: [`${payload.kind}/*`],
-        maximumSizeInBytes: MAX_MB[payload.kind] * 1024 * 1024,
-        addRandomSuffix: true,
-      };
-    },
-  });
+  let result;
+  try {
+    result = await handleUpload({
+      token: BLOB_TOKEN,
+      request: req,
+      body: req.body,
+      onBeforeGenerateToken: async (_pathname, clientPayload) => {
+        let payload = {};
+        try { payload = JSON.parse(clientPayload || '{}'); } catch { /* prázdny payload */ }
+        await mayUpload(req, payload.kind, payload.invite);
+        return {
+          allowedContentTypes: [`${payload.kind}/*`],
+          maximumSizeInBytes: MAX_MB[payload.kind] * 1024 * 1024,
+          addRandomSuffix: true,
+        };
+      },
+    });
+  } catch (e) {
+    if (e instanceof HttpError) throw e;
+    // Chybu z Vercel Blob ukážeme, nech je jasné, čo s úložiskom nie je v poriadku.
+    console.error(e);
+    throw new HttpError(502, `Úložisko Blob hlási chybu: ${e.message}`);
+  }
   res.json(result);
 });
 
@@ -355,6 +369,7 @@ const localUpload = multer({
   },
 });
 app.post('/api/upload', async (req, _res, next) => {
+  if (STORAGE === 'none') throw new HttpError(503, NO_STORAGE_MSG);
   if (STORAGE !== 'local') throw notFound('Použi Blob úložisko.');
   await mayUpload(req, req.query.kind, req.query.invite);
   next();

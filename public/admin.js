@@ -28,6 +28,12 @@ function setPendingBadge(n) {
 // ---------------------------------------------------------------------------
 async function renderPeople(view) {
   const { cycle, users, pending_tasks: pending } = await api('GET', '/api/admin/overview');
+  const { storage } = await whoami();
+  // Bez úložiska na Verceli sa nedajú nahrávať fotky – admin to musí vidieť hneď.
+  if (storage === 'none') view.append(h('div.notice.danger', { style: { marginBottom: '16px' } }, [
+    h('b', {}, 'Nahrávanie fotiek nefunguje. '),
+    'Vo Verceli otvor projekt → Storage → Create → Blob, pripoj ho k projektu a potom Deployments → ⋯ → Redeploy.',
+  ]));
   setPendingBadge(pending);
   const active = users.filter((u) => u.active);
   const waiting = active.filter((u) => u.tomorrow && !u.tomorrow.outfit && u.tomorrow.status !== 'self');

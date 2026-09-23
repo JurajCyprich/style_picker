@@ -179,6 +179,7 @@ function loadScript(src) {
 async function uploadFile(file, kind, { invite, onProgress } = {}) {
   if (!file) throw new Error('Vyber súbor.');
   const { storage, max_mb: maxMb } = await whoami();
+  if (storage === 'none') throw new Error('Nahrávanie fotiek ešte nie je nastavené. Daj vedieť adminovi.');
   if (file.size > maxMb[kind] * 1024 * 1024) throw new Error(`Súbor je príliš veľký (max ${maxMb[kind]} MB).`);
 
   if (storage === 'blob') {
