@@ -419,6 +419,7 @@ me.get('/', async (req, res) => {
     user: publicUser(req.user, { withToken: true }),
     cycle,
     late_cost: Number(await getSetting('late_cost')),
+    weekly_tokens: Number(await getSetting('weekly_tokens')),
     today: publicDay(await getDay(req.user.id, cycle.today)),
     tomorrow: publicDay(await getDay(req.user.id, cycle.target)),
     items: await itemsOf(req.user.id, true),

@@ -255,3 +255,90 @@ function bump(el) {
   void el.offsetWidth;
   el.classList.add('bump');
 }
+
+// ---------------------------------------------------------------------------
+// Ikony (inline SVG, farba podľa textu)
+// ---------------------------------------------------------------------------
+const ICONS = {
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  camera: '<path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3.5"/>',
+  image: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"/>',
+  video: '<path d="m22 8-6 4 6 4V8z"/><rect x="2" y="6" width="14" height="12" rx="2"/>',
+  search: '<circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/>',
+  clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  check: '<path d="M20 6 9 17l-5-5"/>',
+  x: '<path d="M18 6 6 18M6 6l12 12"/>',
+  shirt: '<path d="M20.4 3.5 16 2a4 4 0 0 1-8 0L3.6 3.5a2 2 0 0 0-1.3 2.2l.6 3.5a1 1 0 0 0 1 .8H6v10a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V10h2.1a1 1 0 0 0 1-.8l.6-3.5a2 2 0 0 0-1.3-2.2z"/>',
+  hanger: '<path d="M12 8a2.5 2.5 0 1 1 2.5-2.5"/><path d="M12 8 2.8 15.2A1.1 1.1 0 0 0 3.5 17h17a1.1 1.1 0 0 0 .7-1.8L12 8z"/>',
+  coin: '<circle cx="12" cy="12" r="9"/><path d="M14.8 9.2A3 3 0 0 0 12 8c-1.7 0-3 .9-3 2s1.3 1.6 3 2 3 .9 3 2-1.3 2-3 2a3 3 0 0 1-2.8-1.2M12 6.5V8m0 8v1.5"/>',
+  calendar: '<rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/>',
+  sparkles: '<path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3z"/>',
+  link: '<path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/>',
+  share: '<path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8M16 6l-4-4-4 4M12 2v13"/>',
+  arrowLeft: '<path d="M19 12H5M12 19l-7-7 7-7"/>',
+  arrowRight: '<path d="M5 12h14M12 5l7 7-7 7"/>',
+  phone: '<rect x="6" y="2" width="12" height="20" rx="2.5"/><path d="M11 18h2"/>',
+  alert: '<circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/>',
+};
+function icon(name, cls = 'ico') {
+  const span = document.createElement('span');
+  span.innerHTML = `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name] || ''}</svg>`;
+  return span.firstChild;
+}
+
+// ---------------------------------------------------------------------------
+// Vysúvacie okno (na mobile zospodu, na počítači v strede)
+// ---------------------------------------------------------------------------
+function openSheet(title, body) {
+  const dlg = $('#dlg');
+  dlg.replaceChildren(h('div.card', {}, [
+    h('div.sheet-head', {}, [h('h2', {}, title), h('button.close-x', { type: 'button', 'aria-label': 'Zavrieť', onclick: closeSheet }, icon('x'))]),
+    ...[].concat(body),
+  ]));
+  if (!dlg.dataset.bound) {
+    // Klik mimo obsahu okno zavrie.
+    dlg.addEventListener('click', (e) => { if (e.target === dlg) closeSheet(); });
+    dlg.dataset.bound = '1';
+  }
+  dlg.showModal();
+  return dlg;
+}
+function closeSheet() { const d = $('#dlg'); if (d.open) d.close(); }
+
+// Pásik priebehu nahrávania: el = element, set(p) = percentá
+function uploadProgress(label) {
+  const bar = h('i');
+  const text = h('span', {}, `${label}…`);
+  const el = h('div.upload-state', {}, [text, h('div.upbar', {}, bar)]);
+  return { el, set: (p) => { bar.style.width = `${p}%`; text.textContent = `${label}… ${p} %`; } };
+}
+
+// Výber fotky: tlačidlá „Odfotiť“ a „Z galérie“ s náhľadom. Vráti { el, file() }.
+function photoPicker({ hint = 'Zatiaľ žiadna fotka', captureMode = 'environment', onChange } = {}) {
+  let file = null;
+  const preview = h('div.preview', {}, [h('div', {}, [icon('image'), h('div.small', {}, hint)])]);
+  const mkInput = (capture) => h('input', { type: 'file', accept: 'image/*', ...(capture ? { capture: captureMode } : {}),
+    onchange: (e) => {
+      const f = e.target.files[0];
+      if (!f) return;
+      file = f;
+      preview.classList.add('has');
+      preview.replaceChildren(h('img', { src: URL.createObjectURL(f), alt: '' }));
+      onChange?.(f);
+    } });
+  const cam = mkInput(true);
+  const gal = mkInput(false);
+  const el = h('div.photo-pick', {}, [preview, h('div.row', {}, [
+    h('button.btn', { type: 'button', onclick: () => cam.click() }, [icon('camera'), 'Odfotiť']),
+    h('button.btn', { type: 'button', onclick: () => gal.click() }, [icon('image'), 'Z galérie']),
+  ]), cam, gal]);
+  return { el, file: () => file, reset: () => { file = null; preview.classList.remove('has'); preview.replaceChildren(h('div', {}, [icon('image'), h('div.small', {}, hint)])); } };
+}
+
+async function shareOrCopy(url, title = 'Style Picker') {
+  if (navigator.share) {
+    try { await navigator.share({ title, url }); return; } catch (e) { if (e.name === 'AbortError') return; }
+  }
+  await navigator.clipboard.writeText(url);
+  toast('Skopírované');
+}
