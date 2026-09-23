@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="sk">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Registrácia · Style Picker</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<main class="narrow">
+  <div class="card" id="form-card">
+    <h1>Vitaj v Style <span style="color:var(--accent)">Picker</span></h1>
+    <p class="muted">Nahraj oblečenie, ktoré máš, a admin ti každý deň vyberie, čo si oblečieš. Na začiatok potrebujeme tvoje meno a dve fotky celej postavy v <b>T-póze</b> – ruky vodorovne do strán, nohy mierne od seba, celé telo v zábere, jednoduché pozadie, tesnejšie oblečenie.</p>
+    <form id="f">
+      <label class="field"><span>Meno / prezývka</span><input type="text" name="name" maxlength="60" required></label>
+      <div class="grid cols-2">
+        <label class="photo-drop"><div class="tpose">🙆</div><b>Fotka spredu</b><div class="small muted">T-póza, celé telo</div>
+          <input type="file" name="front" accept="image/*" required></label>
+        <label class="photo-drop"><div class="tpose">🙆</div><b>Fotka zozadu</b><div class="small muted">T-póza, celé telo</div>
+          <input type="file" name="back" accept="image/*" required></label>
+      </div>
+      <button class="btn primary block" style="margin-top:16px">Registrovať sa</button>
+    </form>
+  </div>
+  <div class="card hidden" id="done-card">
+    <h1>Hotovo 🎉</h1>
+    <p>Toto je tvoj <b>osobný odkaz</b>. Ulož si ho (napr. do záložiek) – cez neho sa kedykoľvek vrátiš do aplikácie aj z iného zariadenia. Nikomu ho neposielaj.</p>
+    <p><input type="text" id="plink" readonly></p>
+    <div class="row"><button class="btn" id="copy">Kopírovať</button><a class="btn primary" href="/app">Pokračovať</a></div>
+  </div>
+</main>
+<script src="/common.js"></script>
+<script>
+const code = location.pathname.split('/').pop();
+$$('.photo-drop').forEach(bindPhotoPreview);
+$('#f').addEventListener('submit', guarded(async (ev) => {
+  ev.preventDefault();
+  const f = ev.target;
+  const fd = new FormData();
+  fd.append('name', f.name.value);
+  fd.append('front', await resizeImage(f.front.files[0], 2000));
+  fd.append('back', await resizeImage(f.back.files[0], 2000));
+  toast('Nahrávam…');
+  const res = await api('POST', `/api/join/${code}`, fd);
+  $('#plink').value = location.origin + res.personal_link;
+  $('#form-card').classList.add('hidden');
+  $('#done-card').classList.remove('hidden');
+}));
+$('#copy').addEventListener('click', () => { navigator.clipboard.writeText($('#plink').value); toast('Skopírované'); });
+</script>
+</body>
+</html>

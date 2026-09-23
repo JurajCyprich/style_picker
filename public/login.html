@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="sk">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Style Picker</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<main class="narrow" style="padding-top:12vh">
+  <div class="card">
+    <h1>Style <span style="color:var(--accent)">Picker</span></h1>
+    <p class="muted">Prihlásenie pre admina. Ak si dostal/a pozývací odkaz, otvor ten – alebo svoj osobný odkaz, ktorý si dostal/a po registrácii.</p>
+    <form id="f">
+      <label class="field"><span>Admin heslo</span><input type="password" name="password" autocomplete="current-password" required autofocus></label>
+      <button class="btn primary block">Prihlásiť</button>
+    </form>
+  </div>
+</main>
+<script src="/common.js"></script>
+<script>
+$('#f').addEventListener('submit', guarded(async (ev) => {
+  ev.preventDefault();
+  await api('POST', '/api/admin/login', { password: ev.target.password.value });
+  location.href = '/admin';
+}));
+</script>
+</body>
+</html>

@@ -1,0 +1,18 @@
+{
+  "name": "style-picker",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Admin vyberá outfity pre ľudí z ich vlastného šatníka – tokeny, deadline, úlohy.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning server.js",
+    "test": "node --disable-warning=ExperimentalWarning --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "dependencies": {
+    "express": "^5.2.1",
+    "multer": "^2.4.0"
+  }
+}

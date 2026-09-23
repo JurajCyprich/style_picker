@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="sk">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Admin · Style Picker</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="brand">Style <span>Picker</span> <span class="badge">admin</span></div>
+    <button class="btn small" onclick="logout()">Odhlásiť</button>
+  </div>
+  <nav class="tabs">
+    <button class="tab active" data-tab="people">Ľudia</button>
+    <button class="tab" data-tab="invites">Pozvánky</button>
+    <button class="tab" data-tab="tasks">Úlohy <span class="badge warn hidden" id="pending-badge"></span></button>
+    <button class="tab" data-tab="settings">Nastavenia</button>
+  </nav>
+</header>
+<main id="view"></main>
+<dialog id="dlg"></dialog>
+<script src="/common.js"></script>
+<script src="/admin.js"></script>
+</body>
+</html>
