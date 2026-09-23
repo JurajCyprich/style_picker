@@ -48,8 +48,8 @@ function toast(msg, isError = false) {
 function guarded(fn) {
   return async function (ev) {
     const btn = ev?.currentTarget instanceof HTMLButtonElement ? ev.currentTarget : ev?.submitter;
-    if (btn) btn.disabled = true;
-    try { await fn.call(this, ev); } catch (e) { toast(e.message, true); } finally { if (btn) btn.disabled = false; }
+    if (btn) { btn.disabled = true; btn.classList.add('busy'); }
+    try { await fn.call(this, ev); } catch (e) { toast(e.message, true); } finally { if (btn) { btn.disabled = false; btn.classList.remove('busy'); } }
   };
 }
 
@@ -133,12 +133,17 @@ function renderStage(personPhoto, layers, itemsById) {
 }
 
 function itemTile(item, { selected, dim, offered, onclick, draggable } = {}) {
-  return h('div.tile' + (selected ? '.selected' : '') + (dim ? '.dim' : '') + (offered ? '.offered' : ''), {
+  const tile = h('div.tile' + (selected ? '.selected' : '') + (dim ? '.dim' : '') + (offered ? '.offered' : ''), {
     onclick, draggable: draggable ? 'true' : undefined, 'data-id': item.id,
   }, [
-    h('div.img', { style: { backgroundImage: `url("${item.photo}")` } }),
+    h('div.img', {}, h('img', { src: item.photo, alt: item.name, loading: 'lazy', draggable: false,
+      onload: (e) => e.currentTarget.classList.add('loaded'), onerror: (e) => e.currentTarget.classList.add('loaded') })),
     h('div.meta', {}, [h('b', {}, item.name), h('small', {}, item.category || 'Bez kategórie')]),
   ]);
+  // Obrázok z cache je hneď hotový – bez zbytočného prelínania pri prekreslení.
+  const img = $('img', tile);
+  if (img.complete && img.naturalWidth) img.classList.add('loaded');
+  return tile;
 }
 
 function categoryChips(items, current, onPick) {
@@ -211,3 +216,42 @@ async function uploadFile(file, kind, { invite, onProgress } = {}) {
 
 // Zobrazí priebeh nahrávania v toaste.
 const progressToast = (label) => (p) => toast(`${label} ${p} %`);
+
+// ---------------------------------------------------------------------------
+// Načítavanie a animácie
+// ---------------------------------------------------------------------------
+function hideSplash() {
+  const s = $('#splash');
+  if (!s || s.classList.contains('gone')) return;
+  s.classList.add('gone');
+  setTimeout(() => s.remove(), 600);
+}
+// Poistka – úvodná obrazovka nikdy neostane visieť.
+setTimeout(hideSplash, 8000);
+
+// Horný pásik počas načítavania; vracia funkciu na ukončenie.
+function startProgress() {
+  let bar = $('#progress');
+  if (!bar) { bar = h('div', { id: 'progress' }); document.body.append(bar); }
+  bar.className = '';
+  void bar.offsetWidth;
+  bar.classList.add('on');
+  return () => { bar.classList.remove('on'); bar.classList.add('done'); };
+}
+
+// Vymení obsah <main id="view"> a skryje úvodnú obrazovku.
+// Animuje sa len pri zmene obrazovky (key), nie pri prekreslení tej istej (napr. klik na kúsok).
+let lastViewKey;
+function swapView(view, key) {
+  if (key !== lastViewKey) view.classList.add('view-enter');
+  lastViewKey = key;
+  $('#view').replaceWith(view);
+  hideSplash();
+}
+
+// Krátke „nadskočenie“ prvku (napr. pri zmene počtu tokenov).
+function bump(el) {
+  el.classList.remove('bump');
+  void el.offsetWidth;
+  el.classList.add('bump');
+}

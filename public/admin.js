@@ -9,7 +9,8 @@ function render() {
   const renderer = state.tab === 'people' && state.userId ? renderPerson
     : { people: renderPeople, invites: renderInvites, tasks: renderTasks, settings: renderSettings }[state.tab];
   const seq = ++state.seq;
-  Promise.resolve(renderer(view)).then(() => { if (seq === state.seq) $('#view').replaceWith(view); })
+  const done = startProgress();
+  Promise.resolve(renderer(view)).then(() => { if (seq === state.seq) swapView(view, `${state.tab}:${state.userId || ''}:${state.date || ''}`); }).finally(done)
     .catch((e) => { if (e.status === 401) location.href = '/'; else toast(e.message, true); });
 }
 $$('.tab').forEach((t) => t.addEventListener('click', () => { state.tab = t.dataset.tab; state.userId = null; render(); }));

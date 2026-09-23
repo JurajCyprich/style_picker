@@ -6,7 +6,9 @@ const state = { tab: 'outfit', data: null, offer: new Set(), offerCat: null, war
 async function load() {
   state.data = await api('GET', '/api/me');
   const n = state.data.user.tokens;
-  $('#tokens').textContent = `${n} ${tokenWord(n)}`;
+  const pill = $('#tokens');
+  const text = `${n} ${tokenWord(n)}`;
+  if (pill.textContent !== text) { if (pill.dataset.ready) bump(pill); pill.textContent = text; pill.dataset.ready = '1'; }
   const day = state.data.tomorrow;
   if (!state.offerDirty) state.offer = new Set(day?.offer || []);
   render();
@@ -18,7 +20,8 @@ function render() {
   const view = h('main', { id: 'view' });
   const renderer = { outfit: renderOutfit, wardrobe: renderWardrobe, tasks: renderTasks, tokens: renderTokens }[state.tab];
   const seq = (state.seq = (state.seq || 0) + 1);
-  Promise.resolve(renderer(view)).then(() => { if (seq === state.seq) $('#view').replaceWith(view); })
+  const done = startProgress();
+  Promise.resolve(renderer(view)).then(() => { if (seq === state.seq) swapView(view, state.tab); }).finally(done)
     .catch((e) => toast(e.message, true));
 }
 
