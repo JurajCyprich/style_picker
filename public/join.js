@@ -41,7 +41,7 @@ function tposeSvg(back) {
 
 function welcome(el) {
   el.append(
-    h('div.hero-mark', {}, 'SP'),
+    h('img.hero-mark', { src: '/icon.svg', alt: '' }),
     h('div.eyebrow', {}, 'Pozvánka'),
     h('h1', {}, 'Vitaj v Style Picker'),
     h('p.lead', {}, 'Niekto ti bude vyberať, čo si oblečieš. Ty len nahráš svoje oblečenie – zvyšok je na ňom.'),

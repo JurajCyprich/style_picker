@@ -100,11 +100,7 @@ li + li { margin-top: 4px; }
   padding: 0 20px; display: flex; align-items: center; gap: 12px;
 }
 .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 1.02rem; letter-spacing: -.01em; margin-right: auto; white-space: nowrap; }
-.brand-mark {
-  width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center; flex: none;
-  background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: #fff;
-  font-size: .72rem; font-weight: 800; letter-spacing: .04em;
-}
+.brand-mark { width: 30px; height: 30px; border-radius: 8px; flex: none; display: block; box-shadow: 0 2px 6px color-mix(in srgb, var(--accent) 30%, transparent); }
 .brand .badge { margin-left: 2px; }
 
 .tabs { display: flex; gap: 2px; padding: 4px; background: var(--surface-2); border-radius: 12px; }
@@ -405,7 +401,7 @@ dialog[open]::backdrop { animation: fade .25s ease both; }
           mask: radial-gradient(farthest-side, transparent calc(100% - 2.5px), #000 calc(100% - 2px));
   animation: spin .9s linear infinite; z-index: 1;
 }
-.loader-mark { font-weight: 800; font-size: .95rem; letter-spacing: .08em; color: var(--text); animation: breathe 1.8s ease-in-out infinite; }
+.loader-mark { width: 30px; height: 30px; border-radius: 8px; display: block; animation: breathe 1.8s ease-in-out infinite; }
 .splash-brand { font-size: .72rem; font-weight: 600; letter-spacing: .38em; text-transform: uppercase; color: var(--muted); padding-left: .38em; }
 
 #progress {
@@ -640,7 +636,7 @@ details.more[open] summary::before { transform: rotate(90deg); }
 .how .h-num { width: 32px; height: 32px; flex: none; border-radius: 10px; display: grid; place-items: center; font-weight: 800; font-size: .9rem; color: #fff; background: linear-gradient(135deg, var(--accent), var(--accent-2)); }
 .how b { display: block; }
 .how span { font-size: .87rem; color: var(--muted); }
-.hero-mark { width: 72px; height: 72px; border-radius: 22px; display: grid; place-items: center; margin-bottom: 22px; color: #fff; font-weight: 800; letter-spacing: .05em; font-size: 1.3rem;
+.hero-mark { width: 72px; height: 72px; border-radius: 18px; display: block; margin-bottom: 22px; color: #fff; font-weight: 800; letter-spacing: .05em; font-size: 1.3rem;
   background: linear-gradient(135deg, var(--accent), var(--accent-2)); box-shadow: 0 14px 34px color-mix(in srgb, var(--accent) 35%, transparent); animation: pop .5s var(--ease) both; }
 .big-input { font-size: 1.3rem !important; min-height: 58px !important; padding: 12px 16px !important; border-radius: 14px !important; font-weight: 600; }
 .pose { display: grid; grid-template-columns: 120px 1fr; gap: 16px; align-items: center; margin: 18px 0; padding: 16px; border-radius: 16px; background: var(--surface); border: 1px solid var(--line); }
